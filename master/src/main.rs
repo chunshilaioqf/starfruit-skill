@@ -36,8 +36,8 @@ const HELP: &str = r#"starfruit-master —— 多节点 WS 协同主节点（管
 
 选项:
   --mode plain|tls      运行模式：非加密(ws)/加密(wss)（默认 plain）
-  --hub-addr <addr>     WS 消息枢纽监听地址（默认 0.0.0.0:9501）
-  --web-addr <addr>     Web 只读面板监听地址（默认 127.0.0.1:9502）
+  --hub-addr <addr>     WS 消息枢纽监听地址（默认 127.0.0.1:9501，禁止 0.0.0.0）
+  --web-addr <addr>     Web 只读面板监听地址（默认 127.0.0.1:9502，禁止 0.0.0.0）
   --cert <path>         TLS 证书 PEM（缺省在 data-dir 自动生成自签证书）
   --key <path>          TLS 私钥 PEM（与 --cert 同时提供）
   --data-dir <dir>      运行数据目录（日志/pid/历史/wake，默认 ./starfruit-data）
@@ -48,13 +48,80 @@ const HELP: &str = r#"starfruit-master —— 多节点 WS 协同主节点（管
   --daemon              后台运行（脱离终端，日志写入 data-dir/starfruit-master.log）
   -h, --help            显示帮助
 
+监听地址规则（务必遵守）:
+  · 仅本机多 agent 工具使用 → 监听 127.0.0.1（默认，最安全）；
+  · 需局域网内其它机器加入 → 监听本机局域网 IP（如 192.168.x.x），禁止监听 0.0.0.0；
+  · 需公网支持 → 用 Cloudflare Tunnel 暴露，并务必使用 --mode tls 加密模式。
+
 模式不匹配（对方加密方式不对）时会向对方报错后断开（见 docs/protocol.md §2.1）。
 "#;
+
+/// 取监听地址的 host 部分（兼容 `[IPv6]:port` 写法）。
+fn host_of(addr: &str) -> &str {
+    if let Some(rest) = addr.strip_prefix('[') {
+        if let Some(idx) = rest.find(']') {
+            return &rest[..idx];
+        }
+    }
+    addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(addr)
+}
+
+/// 是否为"监听全部网卡"的通配地址（被明确禁止）。
+fn is_wildcard_host(host: &str) -> bool {
+    matches!(host, "0.0.0.0" | "::" | "0:0:0:0:0:0:0:0")
+}
+
+/// 是否为仅本机可访问的回环地址。
+fn is_loopback_host(host: &str) -> bool {
+    host == "localhost" || host == "::1" || host.starts_with("127.")
+}
+
+/// 校验监听地址：禁止通配地址（0.0.0.0 / ::），避免无意中把服务暴露到所有网卡。
+fn validate_bind(label: &str, addr: &str) {
+    if is_wildcard_host(host_of(addr)) {
+        eprintln!("[fatal] {label} 不允许监听通配地址 {addr}。");
+        eprintln!("        仅本机使用请用 127.0.0.1；需局域网请用本机局域网 IP（如 192.168.x.x）；");
+        eprintln!("        需公网请用 Cloudflare Tunnel 暴露并配合 --mode tls。详见 --help。");
+        std::process::exit(1);
+    }
+}
+
+/// 启动成功后打印的会话说明：主节点信息 + 子节点加入方式 + 监听规则。
+fn print_banner(cfg: &Config) {
+    let scheme = if cfg.mode == Mode::Tls { "wss" } else { "ws" };
+    let web_scheme = if cfg.mode == Mode::Tls { "https" } else { "http" };
+    let mode = cfg.mode.as_str();
+    let mode_desc = if cfg.mode == Mode::Tls { "wss 加密" } else { "ws 明文" };
+    let server = format!("{scheme}://{}", cfg.hub_addr);
+    let sep = "────────────────────────────────────────────────────────────────────";
+    eprintln!("{sep}");
+    eprintln!("⭐ starfruit-master 已启动（主节点 · 管理者 · 全网唯一）");
+    eprintln!();
+    eprintln!("  主节点名称 : {}", cfg.manager_name);
+    eprintln!("  运行模式   : {mode}（{mode_desc}）");
+    eprintln!("  消息枢纽   : {server}");
+    eprintln!("  只读面板   : {web_scheme}://{}", cfg.web_addr);
+    eprintln!("  数据目录   : {}", cfg.data_dir.display());
+    eprintln!();
+    eprintln!("  其它执行节点加入方式（任选一种客户端，功能等价）：");
+    eprintln!("    Rust    : starfruit-node    --name <唯一名> --mode {mode} --server {server}");
+    eprintln!("    Python3 : starfruit_node.py --name <唯一名> --mode {mode} --server {server}");
+    eprintln!("    Node.js : starfruit-node.js --name <唯一名> --mode {mode} --server {server}");
+    eprintln!("  · 客户端用哪种实现由 agent 按所在机器环境决定：有 Rust 工具链用 Rust 版；");
+    eprintln!("    仅有 Python 用 Python 版；仅有 Node 用 Node.js 版。三者功能等价。");
+    eprintln!("  · --name 全网唯一（同名重连顶掉旧连接）；--mode 必须与主节点一致，否则被报错断开。");
+    eprintln!();
+    eprintln!("  监听地址规则（务必遵守）：");
+    eprintln!("  · 仅本机多 agent 工具使用 → 监听 127.0.0.1（默认，最安全）；");
+    eprintln!("  · 需局域网内其它机器加入 → 监听本机局域网 IP（如 192.168.x.x），禁止监听 0.0.0.0；");
+    eprintln!("  · 需公网支持 → 用 Cloudflare Tunnel 暴露，并务必使用 --mode tls 加密模式。");
+    eprintln!("{sep}");
+}
 
 fn parse_args() -> Config {
     let mut cfg = Config {
         mode: Mode::Plain,
-        hub_addr: "0.0.0.0:9501".into(),
+        hub_addr: "127.0.0.1:9501".into(),
         web_addr: "127.0.0.1:9502".into(),
         cert: None,
         key: None,
@@ -96,6 +163,9 @@ fn parse_args() -> Config {
             other => panic!("未知参数: {other}（--help 查看用法）"),
         }
     }
+    // 监听规则：禁止通配地址（0.0.0.0 / ::）。
+    validate_bind("--hub-addr", &cfg.hub_addr);
+    validate_bind("--web-addr", &cfg.web_addr);
     cfg
 }
 
@@ -238,6 +308,18 @@ async fn run(
         if mode == Mode::Tls { "wss" } else { "ws" },
         cfg.hub_addr
     );
+
+    // 明文监听非本机地址时给出提示：公网务必用 Cloudflare Tunnel + tls。
+    if mode == Mode::Plain && !is_loopback_host(host_of(&cfg.hub_addr)) {
+        eprintln!(
+            "[warn] 当前以明文(plain)监听非本机地址 {}：仅建议可信局域网使用；\
+公网请改用 Cloudflare Tunnel 暴露并配合 --mode tls。",
+            cfg.hub_addr
+        );
+    }
+
+    // 启动成功说明（会话提示）。
+    print_banner(&cfg);
 
     loop {
         tokio::select! {

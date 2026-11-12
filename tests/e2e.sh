@@ -114,6 +114,19 @@ echo $! > "$WORK/worker-tls.pid"
 sleep 1.5
 check "tls 节点注册成功" "grep -q 'registered' $WORK/worker-tls.log"
 
+echo "── 8. 监听规则（禁止 0.0.0.0 + 启动说明）──"
+check "拒绝监听 0.0.0.0（hub）" \
+  "'$MASTER' --hub-addr 0.0.0.0:19699 --data-dir '$WORK/guard' 2>&1 | grep -q '不允许监听通配地址'"
+check "拒绝监听 0.0.0.0（web）" \
+  "'$MASTER' --web-addr 0.0.0.0:19698 --data-dir '$WORK/guard' 2>&1 | grep -q '不允许监听通配地址'"
+"$MASTER" --hub-addr 127.0.0.1:19601 --web-addr 127.0.0.1:19602 \
+  --manager-name leader --data-dir "$WORK/banner" >"$WORK/banner.log" 2>&1 &
+echo $! > "$WORK/banner.pid"
+sleep 1
+check "启动说明含主节点名称" "grep -q '主节点名称 : leader' $WORK/banner.log"
+check "启动说明含节点加入方式（三语言客户端）" "grep -q 'Python3 : starfruit_node.py' $WORK/banner.log"
+check "启动说明含监听规则（禁止 0.0.0.0）" "grep -q '禁止监听 0.0.0.0' $WORK/banner.log"
+
 echo
 echo "════════ 结果: ✅ $PASS 通过 / ❌ $FAIL 失败 ════════"
 [ "$FAIL" -eq 0 ]

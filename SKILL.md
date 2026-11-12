@@ -42,12 +42,29 @@ cd <skill目录>/nodes/rust && cargo build --release # 产出 nodes/rust/target/
 ### 2. 启动主节点（唯一管理者）
 
 ```bash
-# 非加密模式（默认）：WS 9501 + Web 面板 9502
+# 默认仅本机（最安全）：hub 127.0.0.1:9501 + 面板 127.0.0.1:9502
 ./master/target/release/starfruit-master --mode plain --daemon
 
 # 加密模式：首次启动生成自签证书（或 --cert/--key 指定）
 ./master/target/release/starfruit-master --mode tls --daemon
+
+# 局域网内其它机器需加入：监听本机局域网 IP（不要用 0.0.0.0）
+./master/target/release/starfruit-master --mode plain --hub-addr 192.168.1.10:9501 --daemon
 ```
+
+**启动成功后，会话中会打印启动说明**，包含：主节点名称、运行模式、消息枢纽与面板地址、
+数据目录，以及"其它执行节点如何加入"（三语言客户端命令）与"监听地址规则"。
+
+**监听地址规则（务必遵守）**：
+
+| 场景 | 监听地址 | 说明 |
+|---|---|---|
+| 仅本机多 agent 工具使用 | `127.0.0.1`（默认） | 最安全，其它机器无法接入 |
+| 局域网内多机协同 | 本机局域网 IP（如 `192.168.x.x`） | 供局域网其它机器加入 |
+| 需要公网支持 | 本机地址 + **Cloudflare Tunnel** | 由 Tunnel 暴露公网，**必须** `--mode tls` |
+
+> ⛔ **禁止直接监听 `0.0.0.0`**：主节点启动时会**拒绝**通配地址（`0.0.0.0`/`::`）并提示正确做法，
+> 避免无意中把服务暴露到所有网卡。明文（plain）监听非本机地址时会额外告警。
 
 启动后打开面板：`http://127.0.0.1:9502`（tls 模式为 `https://`，自签证书需浏览器信任）。
 面板**无鉴权、全只读**：节点拓扑、消息流转（带动画）、消息历史、统计。
@@ -67,9 +84,11 @@ node nodes/nodejs/starfruit-node.js --name worker-c --mode plain
 ```
 
 要点：
+- **客户端选哪种实现由 agent 按所在机器环境决定**：有 Rust 工具链用 Rust 版；仅有 Python 用
+  Python 版；仅有 Node 用 Node.js 版。三者为等价实现，协议完全相同，任选其一即可；
 - `--name` **全网唯一**（同名重连顶掉旧连接）；一台机器可启动多个节点进程；
 - `--mode` **必须与主节点一致**，否则连接时主节点会**向该节点报错**（`mode_mismatch`）；
-- `--server ws://<主节点IP>:9501` 指定主节点地址（默认本机）。
+- `--server ws://<主节点IP>:9501` 指定主节点地址（默认本机；跨机填主节点的局域网 IP）。
 
 ### 4. 唤醒钩子（agent 对接口子）
 

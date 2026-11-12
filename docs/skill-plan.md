@@ -30,6 +30,7 @@
 | F6 | wake 唤醒钩子（命令/HTTP/哨兵文件） | 全部节点 | agent 对接口子 |
 | F7 | 后台守护（--daemon / systemd / nohup） | 全部节点 | pidfile + 日志文件 |
 | F8 | 三语言子节点（Rust/Python/Node.js） | 子节点 | 功能等价、协议同构 |
+| F9 | 监听地址规则 + 启动说明 | 主节点 | 拒绝通配地址 `0.0.0.0`；启动时打印名称/加入方式/监听规则 |
 
 ## 3. 组件与目录结构
 
@@ -61,7 +62,7 @@ starfruit/                        # SKILL 根目录
 |---|---|
 | **TLS 而非自研加密** | wss 是标准方案：Rust 用 rustls，Python 用 ssl，Node 用 tls，无自研密码学风险 |
 | **模式不匹配双保险** | 传输层嗅探能立即报错但明文可能不可读（TLS 客户端遇明文）；注册帧 `mode` 声明保证错误**一定可读** |
-| **面板只读 + 无鉴权** | 需求明确；绑定默认仅本机（127.0.0.1），如需局域网访问由用户显式指定 `--web-addr` |
+| **面板只读 + 无鉴权** | 需求明确；绑定默认仅本机（127.0.0.1），如需局域网访问由用户显式指定本机局域网 IP；**禁止监听 `0.0.0.0`** |
 | **HTTP + SSE 而非面板 WS** | 只读单向推送，SSE 更简单可靠，无鉴权面更小 |
 | **前端无构建步骤** | 原生 HTML/JS/CSS 单目录，`include_str!` 嵌入二进制，用户零前端工具链负担 |
 | **Python/Node 无第三方依赖** | 局域网离线可用；RFC6455 客户端按协议最小实现（掩码 `mask[i % 4]` 教训已记录） |
@@ -71,6 +72,8 @@ starfruit/                        # SKILL 根目录
 
 1. **安装**：拷贝 SKILL 目录 → `cargo build --release`（master + node-rust）。
 2. **启动主节点**：`starfruit-master --mode plain --daemon`（或 tls + 证书）。
+   监听地址规则：仅本机用 `127.0.0.1`（默认）；局域网用本机局域网 IP；**禁止 `0.0.0.0`**；
+   公网用 Cloudflare Tunnel + `--mode tls`。启动成功会打印主节点名称、加入方式与规则。
 3. **启动子节点**：按语言选 `starfruit-node` / `starfruit_node.py` / `starfruit-node.js`，
    指定 `--name`、`--mode`（与主节点一致）、`--wake-cmd`（agent 唤醒入口）。
 4. **打开面板**：浏览器访问 `http://127.0.0.1:9502`（只读）。

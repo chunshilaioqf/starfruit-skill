@@ -50,3 +50,11 @@
 - 验收标准：①各节点支持 daemon 方式运行；②唤醒钩子实测触发；③文档说明 agent 对接方式
 - 涉及：master/、nodes/、docs/
 - 备注/进度：已完成。--daemon 三端齐备（setsid/detached + pidfile + 日志）；wake 钩子（wake-cmd/wake-url/默认 wake.log 哨兵）实测触发；docs/daemon.md 含 systemd/nohup 与 agent 对接说明
+
+### T-07 主节点启动说明与监听地址规则
+- 状态：已完成
+- 创建：2026-11-12　完成：2026-11-12
+- 目标：主节点启动成功后，在会话中提示说明主节点名称、监听/面板地址，并说明其它执行节点如何加入（客户端由 agent 按机器环境决定用哪种实现）；在启动规则中明确监听地址规则：仅本机用 127.0.0.1，局域网用本机局域网 IP，**禁止 0.0.0.0**，公网建议 Cloudflare Tunnel 且必须加密模式
+- 验收标准：①启动成功打印含主节点名称、加入方式、监听规则的说明；②`--hub-addr`/`--web-addr` 为 `0.0.0.0`/`::` 时被拒绝启动；③默认监听 127.0.0.1；④相关 .md 文档同步更新；⑤e2e 覆盖并通过
+- 涉及：master/src/main.rs、tests/e2e.sh、SKILL.md、README.md、docs/protocol.md、docs/daemon.md、docs/skill-plan.md、CHANGELOG.md、VERSION
+- 备注/进度：已完成。新增 `print_banner` 启动说明与 `validate_bind` 通配地址拦截（含 `::`），默认 hub 地址改 `127.0.0.1:9501`，明文监听非本机地址输出 `[warn]`；e2e 新增第 8 段（拒绝 0.0.0.0 + 启动说明校验），共 27 条全通过；clippy 0 警告。VERSION 0.5.0
