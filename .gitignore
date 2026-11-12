@@ -5,3 +5,4 @@ node_modules/
 *.key
 *.crt
 starfruit-data/
+.DS_Store

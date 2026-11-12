@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-12
+### 新增
+- 主节点 **starfruit-master**（纯 Rust）：WS 消息枢纽（定向/广播路由）、plain/tls 双模式（模式不匹配向对端报错）、离线队列（每对端 200 条 FIFO）、消息历史（环形缓冲 + JSONL 落盘）、`--daemon` 后台运行、wake 唤醒钩子、内置 manager 端点。
+- 只读 Web 可视化面板（HTTP + SSE，无鉴权）：节点列表、消息流转拓扑（canvas 粒子动画）、实时消息流、历史筛选与分页。
+- 子节点三语言实现：`nodes/rust`（starfruit-node）、`nodes/python`、`nodes/nodejs`；Python/Node 为零第三方依赖的裸 RFC6455 客户端，功能等价（注册/收发/离线队列语义/双模式接入/后台运行/wake）。
+- `tests/e2e.sh` 端到端自测（7 段 22 条断言）与 `tests/mode_check.py` 双模式报错校验。
+- `docs/daemon.md`：后台运行（`--daemon`/systemd/nohup）与 wake 唤醒钩子对接说明。
+### 修复
+- 主节点转发消息时补齐完整 JSON 帧（原仅转发纯文本，导致子节点收到非 JSON 帧）。
+- 注册帧加密模式不匹配时，错误帧与 Close 按序入队冲刷后再断开，确保报错可达对端。
+- Python/Node 子节点在握手阶段优先识别服务端返回的 `STARFRUIT_ERR` 明文错误行。
+
 ## [0.3.0] - 2026-11-12
 ### 新增
 - SKILL 命名定稿：**starfruit（杨桃）**（横切面五角星对应星型拓扑），产出 `docs/naming.md` 候选对比与名称矩阵。

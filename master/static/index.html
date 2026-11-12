@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>starfruit · 多节点协同面板</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="bg-glow" aria-hidden="true"></div>
+
+<header class="topbar glass">
+  <div class="brand">
+    <div class="logo" aria-hidden="true">
+      <svg viewBox="0 0 48 48" width="34" height="34">
+        <defs>
+          <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#d7f05a"/><stop offset="1" stop-color="#6fbf3a"/>
+          </linearGradient>
+        </defs>
+        <path fill="url(#lg)" d="M24 3l5.9 12.6L43 17.4l-9.6 9.1 2.5 13.4L24 33.2 12.1 39.9l2.5-13.4L5 17.4l13.1-1.8z"/>
+      </svg>
+    </div>
+    <div class="brand-text">
+      <h1>starfruit</h1>
+      <p>多节点 WS 协同面板 <span class="ro-badge">READ-ONLY</span></p>
+    </div>
+  </div>
+  <div class="chips">
+    <div class="chip"><span class="chip-label">模式</span><span class="chip-value" id="stat-mode">–</span></div>
+    <div class="chip"><span class="chip-label">在线节点</span><span class="chip-value" id="stat-online">–</span></div>
+    <div class="chip"><span class="chip-label">消息总数</span><span class="chip-value" id="stat-msgs">–</span></div>
+    <div class="chip"><span class="chip-label">运行时长</span><span class="chip-value" id="stat-uptime">–</span></div>
+    <div class="chip live-chip"><span class="live-dot" id="live-dot"></span><span class="chip-value" id="live-state">连接中…</span></div>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="panel nodes-panel glass">
+    <h2><span class="h-icon">◧</span>节点 <span class="count" id="node-count"></span></h2>
+    <div id="node-list" class="node-list"></div>
+  </section>
+
+  <section class="panel canvas-panel glass">
+    <h2><span class="h-icon">✦</span>消息流转拓扑</h2>
+    <div class="canvas-wrap"><canvas id="topo"></canvas></div>
+    <div class="legend">
+      <span><i class="lg-dot hub"></i>主节点 hub</span>
+      <span><i class="lg-dot online"></i>在线</span>
+      <span><i class="lg-dot offline"></i>离线</span>
+      <span><i class="lg-line"></i>消息流动</span>
+    </div>
+  </section>
+
+  <section class="panel feed-panel glass">
+    <h2><span class="h-icon">≋</span>实时消息 <span class="hint">最新 60 条</span></h2>
+    <div id="feed" class="feed"></div>
+  </section>
+
+  <section class="panel history-panel glass">
+    <div class="history-head">
+      <h2><span class="h-icon">▤</span>消息历史</h2>
+      <div class="filters">
+        <label>从 <select id="f-from"><option value="">全部</option></select></label>
+        <label>类型 <select id="f-type">
+          <option value="">全部</option>
+          <option>task</option><option>status</option><option>done</option>
+          <option>blocked</option><option>idle</option><option>notice</option>
+          <option>chat</option><option>wake</option><option>system</option>
+        </select></label>
+        <label>包含 <input id="f-text" type="search" placeholder="过滤文本…"></label>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="history-table">
+        <thead>
+          <tr><th>#</th><th>时间</th><th>发送方</th><th>接收方</th><th>类型</th><th>状态</th><th>内容</th></tr>
+        </thead>
+        <tbody id="history-body"></tbody>
+      </table>
+    </div>
+    <div class="history-foot">
+      <button id="load-more" class="btn">加载更早</button>
+      <span class="hint" id="history-hint"></span>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">starfruit panel · 无鉴权 · 全部只读 · <span id="foot-mode"></span></footer>
+<script src="/app.js"></script>
+</body>
+</html>

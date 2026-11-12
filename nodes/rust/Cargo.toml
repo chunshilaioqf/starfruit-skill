@@ -1,0 +1,22 @@
+[package]
+name = "starfruit-node"
+version = "0.4.0"
+edition = "2021"
+description = "starfruit 子节点（Rust 版）：连接主节点、注册、收发消息、wake 唤醒钩子、后台运行"
+
+# 独立于上层 workspace：不参与 cargo build --workspace
+[workspace]
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util", "process", "signal"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+serde_json = "1"
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["std", "logging", "ring", "tls12"] }
+rustls-pemfile = "2"
+ureq = { version = "2", default-features = false, features = ["tls"] }
+libc = "0.2"
+
+[profile.release]
+opt-level = 2
