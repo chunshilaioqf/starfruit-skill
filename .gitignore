@@ -1,0 +1,7 @@
+target/
+__pycache__/
+node_modules/
+*.pem
+*.key
+*.crt
+starfruit-data/

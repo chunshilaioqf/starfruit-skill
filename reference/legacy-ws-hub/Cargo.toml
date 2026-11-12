@@ -1,0 +1,17 @@
+[package]
+name = "ws-hub"
+version = "0.2.0"
+edition = "2021"
+description = "本机轻量 WS 消息枢纽：ZCode(总管) 与 Trae(执行者) 的直连通讯通道，仅绑定 127.0.0.1，无鉴权"
+
+# 独立于上层 workspace：不参与 cargo build --workspace
+[workspace]
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+serde_json = "1"
+
+[profile.release]
+opt-level = 2
