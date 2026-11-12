@@ -20,12 +20,12 @@
 - 备注/进度：产出 docs/2026-11-12-多Agent-WS协同开发全流程经验总结.md（重整版，原文件归档 reference/）、docs/protocol.md（v2 双模式协议）、docs/skill-plan.md（技能规划书）。VERSION 0.2.0
 
 ### T-03 SKILL 命名定稿
-- 状态：待办
-- 创建：2026-11-12　完成：-
+- 状态：已完成
+- 创建：2026-11-12　完成：2026-11-12
 - 目标：为 SKILL 取水果/动物风格且贴合功能的名字，产出命名说明
 - 验收标准：①给出候选名与理由；②定稿名与 SKILL.md、目录、各组件命名一致
 - 涉及：docs/naming.md、SKILL.md
-- 备注/进度：-
+- 备注/进度：定稿 **starfruit（杨桃）**——横切面五角星 = 星型拓扑；组件命名 starfruit-master / starfruit-node 系列。SKILL.md 成稿。VERSION 0.3.0
 
 ### T-04 主节点 Rust 实现 + Web 只读可视化
 - 状态：待办
