@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-12
+### 新增
+- 《2026-11-12-多Agent-WS协同开发全流程经验总结.md》：由 MANAGEMENT.md 重新整理，去项目化、结构化重写。
+- `docs/protocol.md`：starfruit 协议 v2——局域网多节点、plain/tls 双模式、模式不匹配双向报错、wake 唤醒消息。
+- `docs/skill-plan.md`：SKILL 技能规划书（功能清单、目录结构、设计决策、验收标准）。
+### 变更
+- 原始文档归档至 `reference/`（MANAGEMENT.md、ws_protocol-v1.1.md）。
+
 ## [0.1.0] - 2026-11-12
 ### 新增
 - 项目初始化：本地 git 仓库（main 分支）、任务台账 TODO.md。
