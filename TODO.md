@@ -58,3 +58,13 @@
 - 验收标准：①启动成功打印含主节点名称、加入方式、监听规则的说明；②`--hub-addr`/`--web-addr` 为 `0.0.0.0`/`::` 时被拒绝启动；③默认监听 127.0.0.1；④相关 .md 文档同步更新；⑤e2e 覆盖并通过
 - 涉及：master/src/main.rs、tests/e2e.sh、SKILL.md、README.md、docs/protocol.md、docs/daemon.md、docs/skill-plan.md、CHANGELOG.md、VERSION
 - 备注/进度：已完成。新增 `print_banner` 启动说明与 `validate_bind` 通配地址拦截（含 `::`），默认 hub 地址改 `127.0.0.1:9501`，明文监听非本机地址输出 `[warn]`；e2e 新增第 8 段（拒绝 0.0.0.0 + 启动说明校验），共 27 条全通过；clippy 0 警告。VERSION 0.5.0
+
+### T-08 完善 README、架构图与流程图、开源化（MIT）文档
+- 状态：已完成
+- 创建：2026-11-12　完成：2026-11-12
+- 目标：按 `docs/workflow-optimized.md` 工作流（主分支直接提交）完成开源发布准备：①README.md 补充详细使用说明、系统架构图、消息流程图；②用本地 local-llm 生成宣传图并嵌入 README；③新增 README.en.md 英文版；④项目采用 MIT 开源，补齐 LICENSE、CONTRIBUTING.md、CODE_OF_CONDUCT.md、SECURITY.md 等开源配套文档
+- 验收标准：①README.md 含架构图与流程图（Mermaid，可渲染）与详细使用说明（主/子节点 CLI 参数、三种部署场景示例）；②`docs/assets/starfruit-promo.png` 实际生成并嵌入 README；③README.en.md 与中文版内容对齐；④LICENSE 为 MIT 且各文档许可声明一致；⑤CHANGELOG/VERSION 已同步；⑥e2e 与 clippy 复跑通过
+- 涉及：README.md、README.en.md、LICENSE、CONTRIBUTING.md、CODE_OF_CONDUCT.md、SECURITY.md、docs/assets/、CHANGELOG.md、VERSION、master/Cargo.toml、nodes/rust/Cargo.toml
+- 方案：先本地 local-llm 生成宣传图 → 改写 README（架构图/流程图/详细用法）→ 翻译英文版 → 补 MIT 开源文档 → 更新版本与日志 → 实测验证 → 提交推送
+- 风险：local-llm 图片接口不转发 negative_prompt（需 guidance≤1.0 规避）；Mermaid 渲染依赖平台支持
+- 备注/进度：已完成。①宣传图由本地 local-llm（Qwen-Image-2.1）生成，落盘 `docs/assets/starfruit-promo.png`（1280×736）并嵌入 README；②README.md 扩充为 9 大节（含架构图、消息流转时序图、连接与模式校验流程图 3 张 Mermaid 图、主/子节点完整参数表、三种部署场景、开发测试命令）；③新增 `README.en.md` 英文版；④新增 `LICENSE`（MIT）、`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md`、`SECURITY.md`；⑤VERSION 与两个 Cargo.toml 同步升 0.6.0，CHANGELOG 记 `[0.6.0]`；⑥复跑验证：master 构建通过 + clippy 0 警告 + 5 单测通过，nodes/rust 构建通过 + clippy 0 警告 + 1 单测通过，e2e 27 通过 / 0 失败
