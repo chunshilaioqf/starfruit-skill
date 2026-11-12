@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="starfruit">
+  <defs>
+    <radialGradient id="sfBody" cx="50%" cy="42%" r="66%">
+      <stop offset="0%" stop-color="#f7ffc6"/>
+      <stop offset="38%" stop-color="#cdec5c"/>
+      <stop offset="72%" stop-color="#8ed03f"/>
+      <stop offset="100%" stop-color="#57a52f"/>
+    </radialGradient>
+    <linearGradient id="sfGloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.62"/>
+      <stop offset="60%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="sfClip"><path d="M256.00 26.00 L312.78 177.85 L474.74 184.93 L347.87 285.85 L391.19 442.07 L256.00 352.60 L120.81 442.07 L164.13 285.85 L37.26 184.93 L199.22 177.85 Z"/></clipPath>
+  </defs>
+  <path d="M256.00 26.00 L312.78 177.85 L474.74 184.93 L347.87 285.85 L391.19 442.07 L256.00 352.60 L120.81 442.07 L164.13 285.85 L37.26 184.93 L199.22 177.85 Z" fill="url(#sfBody)" stroke="#4f9a2b" stroke-width="12" stroke-linejoin="round"/>
+  <g clip-path="url(#sfClip)">
+    <ellipse cx="256" cy="150" rx="150" ry="120" fill="url(#sfGloss)"/>
+  </g>
+</svg>

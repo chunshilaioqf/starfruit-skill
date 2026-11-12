@@ -37,6 +37,9 @@ sleep 1
 check "主节点日志出现监听行" "grep -q '消息枢纽监听' $WORK/master-plain.log"
 check "面板 API /api/stats 可访问" "curl -sf http://127.0.0.1:19502/api/stats"
 check "面板首页可访问" "curl -sf http://127.0.0.1:19502/ | grep -q starfruit"
+check "面板首页含浏览器图标链接" "curl -sf http://127.0.0.1:19502/ | grep -q '/static/img/favicon-32.png'"
+check "面板 favicon（PNG）可访问" "curl -sf -o /dev/null -w '%{content_type}' http://127.0.0.1:19502/static/img/favicon-32.png | grep -q image/png"
+check "面板 logo（SVG）可访问" "curl -sf -o /dev/null -w '%{content_type}' http://127.0.0.1:19502/static/img/logo.svg | grep -q image/svg+xml"
 check "面板 SSE /events 可访问" "curl -sf -m 2 http://127.0.0.1:19502/events | head -1 | grep -q 'data\|ping'"
 
 echo "── 2. 三语言子节点接入 + 注册回执 ──"

@@ -76,3 +76,13 @@
 - 验收标准：①local/lan/public 三种部署模式校验生效；②公网（public）强制 tls + jwt；③JWT 签发/校验/借用拒绝/过期拒绝均正确；④端口规则与"被占用自动 +1"生效；⑤三语言客户端均支持 `--token` 且 `unauthorized` 时退出码为 3；⑥e2e 新增用例通过；⑦相关文档同步
 - 涉及：master/、nodes/{rust,python,nodejs}/、tests/e2e.sh、SKILL.md、README.md、docs/、CHANGELOG.md、VERSION、master/Cargo.toml、nodes/rust/Cargo.toml
 - 备注/进度：已完成。e2e 39 条全通过；VERSION 0.7.0
+
+### T-10 透明 logo 图标集与 Web 面板浏览器图标
+- 状态：已完成
+- 创建：2026-11-12　完成：2026-11-12
+- 目标：①生成透明背景的 logo 图标 `icon512.png` 及 32/64/128/256 多尺寸透明 PNG，放入 `docs/assets/`；②主节点 Web 可视化面板配置浏览器图标（favicon），并随二进制内嵌提供路由
+- 验收标准：①全部 PNG 为 RGBA 全透明背景、形状为杨桃五角星；②面板 HTML 含 SVG/PNG/apple-touch-icon 图标链接；③`/static/img/*` 图标路径实际可访问且 content-type 正确；④e2e 覆盖并通过；⑤版本号与 CHANGELOG 同步
+- 涉及：docs/assets/、master/static/img/、master/static/index.html、master/src/web.rs、tests/e2e.sh、CHANGELOG.md、VERSION、master/Cargo.toml、nodes/rust/Cargo.toml
+- 方案：以自建 SVG（五角星 + 径向渐变 + 高光）为矢量源，用 `rsvg-convert` 渲染为各尺寸透明 PNG；面板图标经 `include_bytes!` 内嵌到 `web.rs` 并按路径返回，兼容 `/favicon.svg` 与 `/favicon.ico`
+- 风险：环境无 cairosvg，改用 rsvg-convert 渲染；`/favicon.ico` 实际回 PNG（现代浏览器可识别）
+- 备注/进度：已完成。docs/assets 新增 icon.svg 与 icon{512,256,128,64,32}.png、apple-touch-icon.png（180）；master/static/img 新增 logo.svg 与 favicon-{32,64,128,256}.png、apple-touch-icon.png；实测 PNG 为 srgba 透明（角落 alpha=0，非透明像素占比 28.66%），形状为五角星；面板 7 条图标路径实测均 200 且 content-type 正确；e2e 新增 3 条断言，共 42 通过 / 0 失败；VERSION 0.8.0

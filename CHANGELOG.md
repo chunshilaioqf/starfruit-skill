@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-12
+### 新增
+- 透明 **logo 图标集**：`docs/assets/icon.svg`（矢量源）与 `icon512/256/128/64/32.png`、
+  `apple-touch-icon.png`（180）；图形为杨桃横切面五角星，RGBA 全透明背景。
+- 只读 **Web 面板浏览器图标**：`/static/img/logo.svg`、`favicon-32/64/128/256.png`、
+  `apple-touch-icon.png`（随二进制内嵌），并兼容 `/favicon.ico`。
+### 测试
+- `tests/e2e.sh` 新增 3 条断言（首页含图标链接、favicon PNG 与 logo SVG 可访问），共 42 条全通过。
+
 ## [0.7.0] - 2026-11-12
 ### 新增
 - **JWT 令牌校验**：主节点 `--issue-token <节点名>` 签发（签发后打印并退出），子节点 `--token <令牌>`

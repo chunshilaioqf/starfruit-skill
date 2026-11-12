@@ -14,6 +14,14 @@ const INDEX_HTML: &str = include_str!("../static/index.html");
 const STYLE_CSS: &str = include_str!("../static/style.css");
 const APP_JS: &str = include_str!("../static/app.js");
 
+// 浏览器图标：透明 PNG 与矢量 logo，随二进制内嵌（零外部文件依赖）。
+const LOGO_SVG: &[u8] = include_bytes!("../static/img/logo.svg");
+const FAVICON_32: &[u8] = include_bytes!("../static/img/favicon-32.png");
+const FAVICON_64: &[u8] = include_bytes!("../static/img/favicon-64.png");
+const FAVICON_128: &[u8] = include_bytes!("../static/img/favicon-128.png");
+const FAVICON_256: &[u8] = include_bytes!("../static/img/favicon-256.png");
+const APPLE_TOUCH_ICON: &[u8] = include_bytes!("../static/img/apple-touch-icon.png");
+
 /// 启动面板监听（TLS 模式复用主节点证书）；监听套接字由调用方绑定（支持端口占用 +1）。
 pub async fn serve(
     state: Arc<State>,
@@ -121,6 +129,25 @@ where
                 APP_JS.as_bytes(),
             )
             .await
+        }
+        // 浏览器图标（/favicon.ico 兼容：直接回 PNG，现代浏览器可正常识别）。
+        "/static/img/logo.svg" | "/favicon.svg" => {
+            write_resp(&mut stream, 200, "image/svg+xml", LOGO_SVG).await
+        }
+        "/static/img/favicon-32.png" | "/favicon.ico" => {
+            write_resp(&mut stream, 200, "image/png", FAVICON_32).await
+        }
+        "/static/img/favicon-64.png" => {
+            write_resp(&mut stream, 200, "image/png", FAVICON_64).await
+        }
+        "/static/img/favicon-128.png" => {
+            write_resp(&mut stream, 200, "image/png", FAVICON_128).await
+        }
+        "/static/img/favicon-256.png" => {
+            write_resp(&mut stream, 200, "image/png", FAVICON_256).await
+        }
+        "/static/img/apple-touch-icon.png" => {
+            write_resp(&mut stream, 200, "image/png", APPLE_TOUCH_ICON).await
         }
         "/api/nodes" => {
             let body = nodes_json(&state).await;
