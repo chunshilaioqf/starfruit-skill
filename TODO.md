@@ -68,3 +68,11 @@
 - 方案：先本地 local-llm 生成宣传图 → 改写 README（架构图/流程图/详细用法）→ 翻译英文版 → 补 MIT 开源文档 → 更新版本与日志 → 实测验证 → 提交推送
 - 风险：local-llm 图片接口不转发 negative_prompt（需 guidance≤1.0 规避）；Mermaid 渲染依赖平台支持
 - 备注/进度：已完成。①宣传图由本地 local-llm（Qwen-Image-2.1）生成，落盘 `docs/assets/starfruit-promo.png`（1280×736）并嵌入 README；②README.md 扩充为 9 大节（含架构图、消息流转时序图、连接与模式校验流程图 3 张 Mermaid 图、主/子节点完整参数表、三种部署场景、开发测试命令）；③新增 `README.en.md` 英文版；④新增 `LICENSE`（MIT）、`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md`、`SECURITY.md`；⑤VERSION 与两个 Cargo.toml 同步升 0.6.0，CHANGELOG 记 `[0.6.0]`；⑥复跑验证：master 构建通过 + clippy 0 警告 + 5 单测通过，nodes/rust 构建通过 + clippy 0 警告 + 1 单测通过，e2e 27 通过 / 0 失败
+
+### T-09 JWT 令牌校验 + 三种部署模式 + 端口规则
+- 状态：已完成
+- 创建：2026-11-12　完成：2026-11-12
+- 目标：新增 JWT 令牌校验 + 三种部署模式（本机/局域网/公网）+ 端口规则（默认 10001、≥10001、被占用 +1）；删除 `docs/2026-11-12-多Agent-WS协同开发全流程经验总结.md`；同步更新所有受影响的 .md 文档
+- 验收标准：①local/lan/public 三种部署模式校验生效；②公网（public）强制 tls + jwt；③JWT 签发/校验/借用拒绝/过期拒绝均正确；④端口规则与"被占用自动 +1"生效；⑤三语言客户端均支持 `--token` 且 `unauthorized` 时退出码为 3；⑥e2e 新增用例通过；⑦相关文档同步
+- 涉及：master/、nodes/{rust,python,nodejs}/、tests/e2e.sh、SKILL.md、README.md、docs/、CHANGELOG.md、VERSION、master/Cargo.toml、nodes/rust/Cargo.toml
+- 备注/进度：已完成。e2e 39 条全通过；VERSION 0.7.0

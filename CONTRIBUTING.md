@@ -59,7 +59,9 @@ bash tests/e2e.sh
 - **禁止**在代码、配置样例、日志、文档、提交信息中提交任何凭据（token、密码、私钥、API Key）。
 - 提交前自查：`git status` 与 `git diff --staged`，确认无凭据、无调试代码、无构建产物。
 - 安全漏洞请**不要**通过公开 Issue 披露，按 [SECURITY.md](SECURITY.md) 的方式上报。
-- 涉及监听地址的改动必须遵守“**禁止监听 `0.0.0.0`**”规则（见 README 与 `docs/protocol.md`）。
+- 涉及监听地址的改动必须遵守“**禁止监听 `0.0.0.0`**”规则，并遵循三种部署模式
+  （`--deploy local|lan|public`）与端口规则（默认 `10001`、**必须 ≥ 10001**）；
+  涉及公网必须 `tls` + JWT（见 README 与 `docs/protocol.md`）。
 
 ## 提交信息示例
 

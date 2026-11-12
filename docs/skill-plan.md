@@ -1,7 +1,7 @@
-# SKILL 技能规划书 —— 多节点 WS 协同（基于 2026-11-12 经验总结）
+# SKILL 技能规划书 —— 多节点 WS 协同
 
-> 来源：《2026-11-12-多Agent-WS协同开发全流程经验总结.md》§0～§6 的可复用方法论，
-> 落地为一套可安装的 SKILL。协议契约见 `docs/protocol.md`（v2）。
+> 基于本项目既定的局域网多节点协同方法论，落地为一套可安装的 SKILL。
+> 协议契约见 `docs/protocol.md`（v2），工作流约束见 `docs/workflow-optimized.md`。
 
 ---
 
@@ -31,6 +31,8 @@
 | F7 | 后台守护（--daemon / systemd / nohup） | 全部节点 | pidfile + 日志文件 |
 | F8 | 三语言子节点（Rust/Python/Node.js） | 子节点 | 功能等价、协议同构 |
 | F9 | 监听地址规则 + 启动说明 | 主节点 | 拒绝通配地址 `0.0.0.0`；启动时打印名称/加入方式/监听规则 |
+| F10 | 部署模式（`--deploy local\|lan\|public`） | 主节点 | 三模式校验：端口 ≥ 10001、占用自动 +1、禁止 `0.0.0.0`；公网强制 tls + JWT |
+| F11 | JWT 令牌校验 | 主节点签发 / 全部节点携带 | `--issue-token` 签发、`--token` 携带；HS256、iss/sub/exp；失败回执 `unauthorized` 并 Close（退出码 3） |
 
 ## 3. 组件与目录结构
 
@@ -40,7 +42,6 @@ starfruit/                        # SKILL 根目录
 ├── README.md                     # 项目说明
 ├── CHANGELOG.md / VERSION / TODO.md
 ├── docs/
-│   ├── 2026-11-12-多Agent-WS协同开发全流程经验总结.md   # 方法论（重整版）
 │   ├── protocol.md               # starfruit 协议 v2
 │   ├── skill-plan.md             # 本规划书
 │   ├── naming.md                 # 命名定稿
@@ -71,13 +72,16 @@ starfruit/                        # SKILL 根目录
 ## 5. agent 使用流程（SKILL 落地视角）
 
 1. **安装**：拷贝 SKILL 目录 → `cargo build --release`（master + node-rust）。
-2. **启动主节点**：`starfruit-master --mode plain --daemon`（或 tls + 证书）。
-   监听地址规则：仅本机用 `127.0.0.1`（默认）；局域网用本机局域网 IP；**禁止 `0.0.0.0`**；
-   公网用 Cloudflare Tunnel + `--mode tls`。启动成功会打印主节点名称、加入方式与规则。
+2. **启动主节点**：`starfruit-master --deploy local --mode plain --daemon`（或 tls + 证书）。
+   部署模式 `--deploy local|lan|public`（默认 `local`）决定监听地址与约束：`local` 仅监听
+   `127.0.0.1`；`lan` 监听本机局域网 IP；`public` 必须指定具体 IP、强制 `--mode tls` + JWT
+   （配合 Cloudflare Tunnel 时监听 `127.0.0.1` 即可）。**禁止 `0.0.0.0`**；默认端口 hub `10001`、
+   面板 `10002`，均须 ≥ 10001（占用自动 +1）。启动成功会打印名称、加入方式与规则。
 3. **启动子节点**：按语言选 `starfruit-node` / `starfruit_node.py` / `starfruit-node.js`，
-   指定 `--name`、`--mode`（与主节点一致）、`--wake-cmd`（agent 唤醒入口）。
-4. **打开面板**：浏览器访问 `http://127.0.0.1:9502`（只读）。
-5. **协作循环**：按经验总结 §2.2 派发循环运转；`done/blocked/idle` 语义不变。
+   指定 `--name`、`--mode`（与主节点一致）、`--wake-cmd`（agent 唤醒入口）；
+   主节点开启 JWT 时须先用主节点 `--issue-token` 签发令牌，子节点以 `--token` 携带。
+4. **打开面板**：浏览器访问 `http://127.0.0.1:10002`（只读）。
+5. **协作循环**：按 `docs/protocol.md` §4 的消息语义运行派发循环；`done/blocked/idle` 语义不变。
 6. **唤醒对接**：agent 在 `--wake-cmd` 里放自己的唤醒命令（如拉起会话的 CLI），
    收到 `wake` 消息即触发。
 

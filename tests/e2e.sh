@@ -127,6 +127,68 @@ check "启动说明含主节点名称" "grep -q '主节点名称 : leader' $WORK
 check "启动说明含节点加入方式（三语言客户端）" "grep -q 'Python3 : starfruit_node.py' $WORK/banner.log"
 check "启动说明含监听规则（禁止 0.0.0.0）" "grep -q '禁止监听 0.0.0.0' $WORK/banner.log"
 
+echo "── 9. 部署模式与端口规则 ──"
+check "local 模式拒绝非回环地址（须 127.0.0.1）" \
+  "'$MASTER' --deploy local --hub-addr 10.1.2.3:19710 --data-dir '$WORK/guard' 2>&1 | grep -q '本机模式'"
+check "lan 模式拒绝回环地址（须局域网 IP）" \
+  "'$MASTER' --deploy lan --hub-addr 127.0.0.1:19711 --data-dir '$WORK/guard' 2>&1 | grep -q '局域网模式'"
+check "public 模式必须启用 tls" \
+  "'$MASTER' --deploy public --mode plain --hub-addr 127.0.0.1:19712 --data-dir '$WORK/guard' 2>&1 | grep -q '必须启用加密'"
+check "端口低于 10001 被拒绝" \
+  "'$MASTER' --hub-addr 127.0.0.1:9001 --data-dir '$WORK/guard' 2>&1 | grep -q '必须 ≥ 10001'"
+"$MASTER" --hub-addr 127.0.0.1:19711 --web-addr 127.0.0.1:19712 \
+  --data-dir "$WORK/port-a" >"$WORK/port-a.log" 2>&1 &
+echo $! > "$WORK/port-a.pid"
+sleep 1
+"$MASTER" --hub-addr 127.0.0.1:19711 --web-addr 127.0.0.1:19721 \
+  --data-dir "$WORK/port-b" >"$WORK/port-b.log" 2>&1 &
+echo $! > "$WORK/port-b.pid"
+sleep 1
+check "端口被占用自动 +1（19711→19713）" "grep -q 'ws://127.0.0.1:19713' $WORK/port-b.log"
+
+echo "── 10. JWT 令牌（主节点签发 + 子节点校验）──"
+JWT_DIR="$WORK/jwt"
+mkdir -p "$JWT_DIR"
+TOKEN="$("$MASTER" --issue-token worker-jwt --data-dir "$JWT_DIR" 2>/dev/null | tail -1)"
+check "主节点可签发 JWT 令牌（header.payload.signature）" \
+  "[ \$(printf '%s' '$TOKEN' | awk -F. '{print NF}') -eq 3 ]"
+"$MASTER" --require-jwt --hub-addr 127.0.0.1:19731 --web-addr 127.0.0.1:19732 \
+  --data-dir "$JWT_DIR" --manager-name manager >"$WORK/master-jwt.log" 2>&1 &
+echo $! > "$WORK/master-jwt.pid"
+sleep 1
+check "启动说明含 JWT 强制提示" "grep -q 'JWT 校验   : 已强制启用' $WORK/master-jwt.log"
+python3 "$NODE_PY" --name worker-nojwt --mode plain --server ws://127.0.0.1:19731 \
+  --data-dir "$JWT_DIR" >"$WORK/worker-nojwt.log" 2>&1 &
+echo $! > "$WORK/worker-nojwt.pid"
+sleep 1.5
+check "无令牌连接被拒绝（unauthorized）" "grep -q 'JWT 令牌校验失败' $WORK/worker-nojwt.log"
+python3 "$NODE_PY" --name worker-jwt --mode plain --server ws://127.0.0.1:19731 \
+  --data-dir "$JWT_DIR" --token "$TOKEN" >"$WORK/worker-jwt.log" 2>&1 &
+echo $! > "$WORK/worker-jwt.pid"
+sleep 1.5
+check "携带正确令牌注册成功" "grep -q 'registered' $WORK/worker-jwt.log"
+BAD_TOKEN="$("$MASTER" --issue-token other-node --data-dir "$JWT_DIR" 2>/dev/null | tail -1)"
+python3 "$NODE_PY" --name worker-jwt --mode plain --server ws://127.0.0.1:19731 \
+  --data-dir "$JWT_DIR" --token "$BAD_TOKEN" >"$WORK/worker-bad.log" 2>&1 &
+echo $! > "$WORK/worker-bad.pid"
+sleep 1.5
+check "借用他人令牌被拒绝（sub 不一致）" "grep -q 'JWT 令牌校验失败' $WORK/worker-bad.log"
+
+echo "── 11. 公网模式强制 tls + jwt ──"
+PUB_DIR="$WORK/jwt-pub"
+mkdir -p "$PUB_DIR"
+"$MASTER" --deploy public --mode tls --hub-addr 127.0.0.1:19741 --web-addr 127.0.0.1:19742 \
+  --data-dir "$PUB_DIR" >"$WORK/master-public.log" 2>&1 &
+echo $! > "$WORK/master-public.pid"
+sleep 1.5
+check "公网模式启动并强制 JWT" "grep -q '公网模式：已强制启用 JWT' $WORK/master-public.log"
+TOKEN_PUB="$("$MASTER" --issue-token worker-pub --data-dir "$PUB_DIR" 2>/dev/null | tail -1)"
+python3 "$NODE_PY" --name worker-pub --mode tls --server wss://127.0.0.1:19741 \
+  --data-dir "$PUB_DIR" --token "$TOKEN_PUB" >"$WORK/worker-pub.log" 2>&1 &
+echo $! > "$WORK/worker-pub.pid"
+sleep 1.5
+check "公网模式（tls）携带令牌注册成功" "grep -q 'registered' $WORK/worker-pub.log"
+
 echo
 echo "════════ 结果: ✅ $PASS 通过 / ❌ $FAIL 失败 ════════"
 [ "$FAIL" -eq 0 ]

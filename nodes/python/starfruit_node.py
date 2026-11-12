@@ -253,6 +253,7 @@ class Node:
         self.send_json({
             "action": "register", "from": self.name,
             "role": self.args.role, "mode": self.mode, "ver": 2,
+            "token": self.args.token or "",
         })
 
         # outbox 轮询线程
@@ -310,6 +311,9 @@ class Node:
             if code == "mode_mismatch":
                 log(f"加密模式不匹配（服务端报错）：{v.get('detail')}")
                 sys.exit(2)
+            if code == "unauthorized":
+                log(f"JWT 令牌校验失败（服务端报错）：{v.get('detail')}")
+                sys.exit(3)
             log(f"系统回执 {code}: {v.get('detail', '')}")
             return
 
@@ -341,12 +345,14 @@ def daemonize(data_dir, name):
 
 def main():
     ap = argparse.ArgumentParser(description="starfruit 子节点（Python 版）")
-    ap.add_argument("--server", default="ws://127.0.0.1:9501",
-                    help="主节点地址 ws:// 或 wss://（默认 ws://127.0.0.1:9501）")
+    ap.add_argument("--server", default="ws://127.0.0.1:10001",
+                    help="主节点地址 ws:// 或 wss://（默认 ws://127.0.0.1:10001）")
     ap.add_argument("--name", required=True, help="节点名（全网唯一）")
     ap.add_argument("--role", default="worker", help="角色标签（默认 worker）")
     ap.add_argument("--mode", default="plain", choices=["plain", "tls"],
                     help="加密模式，必须与主节点一致（默认 plain）")
+    ap.add_argument("--token", default=None,
+                    help="JWT 令牌（主节点 --issue-token <本节点名> 签发；公网模式必填）")
     ap.add_argument("--data-dir", default="starfruit-data", help="运行数据目录")
     ap.add_argument("--wake-cmd", default=None, help="wake 唤醒钩子：shell 命令")
     ap.add_argument("--wake-url", default=None, help="wake 唤醒钩子：HTTP POST URL")

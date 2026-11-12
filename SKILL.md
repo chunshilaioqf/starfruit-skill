@@ -10,7 +10,7 @@ metadata: { "openclaw": { "emoji": "⭐" } }
 一机可跑多节点；协议支持加密/非加密双模式；主节点带只读 Web 面板（消息流动画）。
 所有节点都是**脱离 agent 会话的后台进程**，通过 **wake 钩子**唤醒对话（钩子由 agent 自行对接）。
 
-方法论来源：`docs/2026-11-12-多Agent-WS协同开发全流程经验总结.md`；
+方法论来源：`docs/skill-plan.md`；
 协议契约：`docs/protocol.md`（v2）；命名由来：`docs/naming.md`。
 
 ## 何时使用
@@ -41,32 +41,54 @@ cd <skill目录>/nodes/rust && cargo build --release # 产出 nodes/rust/target/
 
 ### 2. 启动主节点（唯一管理者）
 
+三种部署模式（`--deploy`，默认 `local`）：
+
+| `--deploy` | 监听约束 | 加密 / JWT |
+|---|---|---|
+| `local`（默认） | 只监听 `127.0.0.1` | tls / jwt 可选 |
+| `lan` | 监听本机局域网 IP，**禁止 `0.0.0.0`** | tls / jwt 可选 |
+| `public` | **禁止 `0.0.0.0`** 且必须指定具体 IP（配合 Cloudflare Tunnel 时监听 `127.0.0.1` 作为隧道指向） | **必须 `--mode tls`，且强制 JWT** |
+
 ```bash
-# 默认仅本机（最安全）：hub 127.0.0.1:9501 + 面板 127.0.0.1:9502
-./master/target/release/starfruit-master --mode plain --daemon
+# local 模式（默认，最安全）：仅监听 127.0.0.1，hub 127.0.0.1:10001 + 面板 127.0.0.1:10002
+./master/target/release/starfruit-master --deploy local --mode plain --daemon
 
 # 加密模式：首次启动生成自签证书（或 --cert/--key 指定）
-./master/target/release/starfruit-master --mode tls --daemon
+./master/target/release/starfruit-master --deploy local --mode tls --daemon
 
-# 局域网内其它机器需加入：监听本机局域网 IP（不要用 0.0.0.0）
-./master/target/release/starfruit-master --mode plain --hub-addr 192.168.1.10:9501 --daemon
+# 局域网模式（lan）：监听本机局域网 IP（不要用 0.0.0.0）
+./master/target/release/starfruit-master --deploy lan --mode plain --hub-addr 192.168.1.10:10001 --daemon
+
+# 公网模式（public）：必须指定具体 IP + --mode tls + 强制 JWT（配合 Cloudflare Tunnel）
+./master/target/release/starfruit-master --deploy public --hub-addr 127.0.0.1:10001 --mode tls --daemon
 ```
 
-**启动成功后，会话中会打印启动说明**，包含：主节点名称、运行模式、消息枢纽与面板地址、
+**主节点参数**：`--deploy <local|lan|public>`（默认 `local`）、`--mode <plain|tls>`、
+`--hub-addr <IP:PORT>` / `--web-addr <IP:PORT>`（端口 **≥10001**，默认 hub `10001` / 面板 `10002`，
+被占用时自动 +1）、`--cert` / `--key`、`--jwt-secret <密钥>`（缺省自动生成 `data-dir/jwt-secret`，权限 0600）、
+`--jwt-ttl <秒>`（默认 86400）、`--require-jwt`、`--issue-token <节点名>`（签发后打印并退出）、`--daemon`。
+
+**JWT 令牌**：令牌**只能由主节点签发**（`--issue-token <节点名>`，签发后打印并退出）；所有子节点连接时
+**必须 `--token <令牌>`** 校验；令牌缺失或校验失败时回执 `unauthorized` 并断开连接（客户端退出码 3）。
+算法 HS256，`iss=starfruit-master`，含 `sub` / `iat` / `exp`；`--require-jwt` 时强制启用。令牌**不可跨节点
+借用**，过期即拒绝。
+
+**启动成功后，会话中会打印启动说明**，包含：主节点名称、部署模式、运行模式、消息枢纽与面板地址、
 数据目录，以及"其它执行节点如何加入"（三语言客户端命令）与"监听地址规则"。
 
 **监听地址规则（务必遵守）**：
 
 | 场景 | 监听地址 | 说明 |
 |---|---|---|
-| 仅本机多 agent 工具使用 | `127.0.0.1`（默认） | 最安全，其它机器无法接入 |
-| 局域网内多机协同 | 本机局域网 IP（如 `192.168.x.x`） | 供局域网其它机器加入 |
-| 需要公网支持 | 本机地址 + **Cloudflare Tunnel** | 由 Tunnel 暴露公网，**必须** `--mode tls` |
+| 仅本机多 agent 工具使用 | `127.0.0.1`（默认） | 对应 `--deploy local`，最安全，其它机器无法接入 |
+| 局域网内多机协同 | 本机局域网 IP（如 `192.168.x.x`） | 对应 `--deploy lan`，供局域网其它机器加入 |
+| 需要公网支持 | 本机地址 + **Cloudflare Tunnel** | 对应 `--deploy public`，由 Tunnel 暴露公网，**必须** `--mode tls` 且强制 JWT |
 
 > ⛔ **禁止直接监听 `0.0.0.0`**：主节点启动时会**拒绝**通配地址（`0.0.0.0`/`::`）并提示正确做法，
 > 避免无意中把服务暴露到所有网卡。明文（plain）监听非本机地址时会额外告警。
+> 端口规则：所有模式端口必须 **≥10001**，默认 hub `10001` / 面板 `10002`，被占用时自动 +1。
 
-启动后打开面板：`http://127.0.0.1:9502`（tls 模式为 `https://`，自签证书需浏览器信任）。
+启动后打开面板：`http://127.0.0.1:10002`（tls 模式为 `https://`，自签证书需浏览器信任）。
 面板**无鉴权、全只读**：节点拓扑、消息流转（带动画）、消息历史、统计。
 
 ### 3. 启动子节点（任选一种实现，功能等价）
@@ -88,7 +110,8 @@ node nodes/nodejs/starfruit-node.js --name worker-c --mode plain
   Python 版；仅有 Node 用 Node.js 版。三者为等价实现，协议完全相同，任选其一即可；
 - `--name` **全网唯一**（同名重连顶掉旧连接）；一台机器可启动多个节点进程；
 - `--mode` **必须与主节点一致**，否则连接时主节点会**向该节点报错**（`mode_mismatch`）；
-- `--server ws://<主节点IP>:9501` 指定主节点地址（默认本机；跨机填主节点的局域网 IP）。
+- `--server ws://127.0.0.1:10001` 指定主节点地址（**默认 `ws://127.0.0.1:10001`**；跨机填主节点的局域网 IP）；
+- `--token <令牌>`：主节点启用 JWT 时**必填**，缺失或校验失败回执 `unauthorized` 并断开（退出码 3）。
 
 ### 4. 唤醒钩子（agent 对接口子）
 
@@ -105,7 +128,7 @@ node nodes/nodejs/starfruit-node.js --name worker-c --mode plain
 - 帧：JSON 文本，`{"from","to","type","text","ts"}`；`to` 支持 `"all"` 广播；
 - 类型：`task / status / done / blocked / idle / notice / chat / wake`；
 - 注册：首帧 `{"action":"register","from":"<name>","role":"worker|manager","mode":"plain|tls","ver":2}`；
-- 回执：`registered / sent / queued / queued_delivered / broadcast_ok / no_such_peer / bad_msg / warn / mode_mismatch`；
+- 回执：`registered / sent / queued / queued_delivered / broadcast_ok / no_such_peer / bad_msg / warn / mode_mismatch / unauthorized`；
 - 离线队列：定向消息对端不在线暂存（每对端 200 条 FIFO），注册后自动投递；广播不补发。
 
 ## 后台运行（脱离会话）
@@ -126,8 +149,8 @@ node nodes/nodejs/starfruit-node.js --name worker-c --mode plain
 ```
 SKILL.md                          ← 本文件
 docs/protocol.md                  ← 协议 v2（双模式/报错语义/回执码）
-docs/2026-11-12-多Agent-WS协同开发全流程经验总结.md  ← 方法论
-docs/skill-plan.md / naming.md / daemon.md / workflow-optimized.md
+docs/skill-plan.md                ← 方法论（含部署模式与 JWT）
+docs/naming.md / daemon.md / workflow-optimized.md
 master/                           ← 主节点（Rust，含 static/ 面板前端）
 nodes/{rust,python,nodejs}/       ← 子节点三实现
 reference/                        ← legacy ws-hub v0.2.0 等历史归档

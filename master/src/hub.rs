@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+use crate::auth::TokenAuth;
 use crate::protocol::{
     now_ms, registered_json, sniff, sys_json, Mode, Sniff, State, BACKLOG_CAP,
 };
@@ -134,11 +135,15 @@ pub async fn route(state: &Arc<State>, from: &str, v: &Value) -> String {
 }
 
 /// 单个连接的完整生命周期：嗅探 → 可选 TLS → WS 握手 → 注册/路由 → 清理。
+///
+/// `auth` 为 `Some` 时启用 JWT 令牌校验（公网模式强制）：注册帧必须携带合法 `token`，
+/// 否则回执 `unauthorized` 后断开。
 pub async fn serve(
     raw: TcpStream,
     state: Arc<State>,
     mode: Mode,
     tls: Option<tokio_rustls::TlsAcceptor>,
+    auth: Option<Arc<TokenAuth>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // ① 传输层嗅探：加密方式不对 → 明文报错后断开（对方可读时必读到）。
     let mut head = [0u8; 1];
@@ -190,7 +195,7 @@ pub async fn serve(
                     Ok(Message::Close(_)) => break,
                     Ok(Message::Text(text)) => {
                         if let Some(done) = handle_text(
-                            &state, &out_tx, &mut my_name, &text, mode,
+                            &state, &out_tx, &mut my_name, &text, mode, &auth,
                         )
                         .await
                         {
@@ -251,6 +256,7 @@ async fn handle_text(
     my_name: &mut Option<String>,
     text: &str,
     mode: Mode,
+    auth: &Option<Arc<TokenAuth>>,
 ) -> Option<bool> {
     let v: Value = match serde_json::from_str(text) {
         Ok(v) => v,
@@ -300,6 +306,24 @@ async fn handle_text(
                     return None;
                 }
                 _ => {}
+            }
+        }
+        // JWT 令牌校验（公网模式强制）：令牌只能由主节点签发，且 `sub` 必须等于注册名。
+        if let Some(auth) = auth {
+            let token = v.get("token").and_then(|t| t.as_str()).unwrap_or("");
+            let reject = |detail: String| {
+                let _ = out_tx.send(Message::text(sys_json("unauthorized", &detail)));
+                let _ = out_tx.send(Message::Close(None));
+                eprintln!("[hub] {name} JWT 校验失败：{detail}");
+            };
+            if token.trim().is_empty() {
+                reject(format!(
+                    "缺少 JWT 令牌：请用 `starfruit-master --issue-token {name}` 签发，并以 --token <令牌> 连接"
+                ));
+                return None;
+            } else if let Err(e) = auth.verify(token, &name) {
+                reject(e);
+                return None;
             }
         }
         let role = v

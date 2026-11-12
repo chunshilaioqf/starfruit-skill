@@ -21,10 +21,11 @@ const HELP: &str = r#"starfruit 子节点（Rust 版）
 用法: starfruit-node --name <名字> [选项]
 
 选项:
-  --server <url>     主节点地址 ws:// 或 wss://（默认 ws://127.0.0.1:9501）
+  --server <url>     主节点地址 ws:// 或 wss://（默认 ws://127.0.0.1:10001）
   --name <name>      节点名（全网唯一，必填）
   --role <role>      角色标签（默认 worker）
   --mode plain|tls   加密模式，必须与主节点一致（默认 plain）
+  --token <jwt>      JWT 令牌（主节点 --issue-token <本节点名> 签发；公网模式必填）
   --data-dir <dir>   运行数据目录（默认 ./starfruit-data）
   --wake-cmd <sh>    wake 唤醒钩子：shell 命令（SF_FROM/SF_TO/SF_TEXT/SF_TS）
   --wake-url <url>   wake 唤醒钩子：HTTP POST JSON
@@ -38,6 +39,7 @@ struct Cfg {
     name: String,
     role: String,
     mode: String,
+    token: Option<String>,
     data_dir: PathBuf,
     wake_cmd: Option<String>,
     wake_url: Option<String>,
@@ -48,10 +50,11 @@ struct Cfg {
 
 fn parse_args() -> Cfg {
     let mut cfg = Cfg {
-        server: "ws://127.0.0.1:9501".into(),
+        server: "ws://127.0.0.1:10001".into(),
         name: String::new(),
         role: "worker".into(),
         mode: "plain".into(),
+        token: None,
         data_dir: PathBuf::from("starfruit-data"),
         wake_cmd: None,
         wake_url: None,
@@ -68,6 +71,7 @@ fn parse_args() -> Cfg {
             "--name" => cfg.name = val("--name"),
             "--role" => cfg.role = val("--role"),
             "--mode" => cfg.mode = val("--mode"),
+            "--token" => cfg.token = Some(val("--token")),
             "--data-dir" => cfg.data_dir = PathBuf::from(val("--data-dir")),
             "--wake-cmd" => cfg.wake_cmd = Some(val("--wake-cmd")),
             "--wake-url" => cfg.wake_url = Some(val("--wake-url")),
@@ -316,6 +320,10 @@ async fn run_forever(cfg: Cfg) {
                     log("加密模式不匹配，请与主节点保持相同的 --mode 后重试");
                     std::process::exit(2);
                 }
+                if e.contains("unauthorized") {
+                    log("JWT 令牌校验失败，请向主节点申请 --issue-token 签发的令牌后以 --token 重试");
+                    std::process::exit(3);
+                }
             }
         }
         let delay = BACKOFF[attempt.min(BACKOFF.len() - 1)];
@@ -334,13 +342,15 @@ where
 {
     let (mut sink, mut incoming) = ws.split();
 
-    // 注册（v2：声明 mode）。
-    let reg = serde_json::json!({
+    // 注册（v2：声明 mode + 可选 JWT 令牌）。
+    let mut reg = serde_json::json!({
         "action": "register", "from": cfg.name,
         "role": cfg.role, "mode": cfg.mode, "ver": 2,
-    })
-    .to_string();
-    sink.send(Message::text(reg))
+    });
+    if let Some(token) = &cfg.token {
+        reg["token"] = Value::from(token.as_str());
+    }
+    sink.send(Message::text(reg.to_string()))
         .await
         .map_err(|e| format!("注册发送失败: {e}"))?;
 
@@ -492,6 +502,13 @@ fn on_frame(cfg: &Cfg, inbox_path: &std::path::Path, text: &str) -> Option<Strin
                 v.get("detail").and_then(|d| d.as_str()).unwrap_or("")
             ));
             return Some("mode_mismatch".into());
+        }
+        if code == "unauthorized" {
+            log(&format!(
+                "JWT 令牌校验失败（服务端报错）：{}",
+                v.get("detail").and_then(|d| d.as_str()).unwrap_or("")
+            ));
+            return Some("unauthorized".into());
         }
         log(&format!(
             "系统回执 {code}: {}",

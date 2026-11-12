@@ -27,10 +27,11 @@ const { spawn } = require("child_process");
 
 function parseArgs(argv) {
   const args = {
-    server: "ws://127.0.0.1:9501",
+    server: "ws://127.0.0.1:10001",
     name: null,
     role: "worker",
     mode: "plain",
+    token: null,
     dataDir: "starfruit-data",
     wakeCmd: null,
     wakeUrl: null,
@@ -46,6 +47,7 @@ function parseArgs(argv) {
       case "--name": args.name = next(); break;
       case "--role": args.role = next(); break;
       case "--mode": args.mode = next(); break;
+      case "--token": args.token = next(); break;
       case "--data-dir": args.dataDir = next(); break;
       case "--wake-cmd": args.wakeCmd = next(); break;
       case "--wake-url": args.wakeUrl = next(); break;
@@ -64,10 +66,11 @@ const HELP = `starfruit 子节点（Node.js 版）
 用法: node starfruit-node.js --name <名字> [选项]
 
 选项:
-  --server <url>     主节点地址 ws:// 或 wss://（默认 ws://127.0.0.1:9501）
+  --server <url>     主节点地址 ws:// 或 wss://（默认 ws://127.0.0.1:10001）
   --name <name>      节点名（全网唯一，必填）
   --role <role>      角色标签（默认 worker）
   --mode plain|tls   加密模式，必须与主节点一致（默认 plain）
+  --token <jwt>      JWT 令牌（主节点 --issue-token <本节点名> 签发；公网模式必填）
   --data-dir <dir>   运行数据目录（默认 ./starfruit-data）
   --wake-cmd <sh>    wake 唤醒钩子：shell 命令（SF_FROM/SF_TO/SF_TEXT/SF_TS）
   --wake-url <url>   wake 唤醒钩子：HTTP POST JSON
@@ -346,6 +349,7 @@ class Node {
     this.ws.sendText(JSON.stringify({
       action: "register", from: this.name,
       role: this.args.role, mode: this.args.mode, ver: 2,
+      token: this.args.token || "",
     }));
 
     const outboxTimer = setInterval(() => {
@@ -379,6 +383,10 @@ class Node {
       if (v.code === "mode_mismatch") {
         log(`加密模式不匹配（服务端报错）：${v.detail}`);
         process.exit(2);
+      }
+      if (v.code === "unauthorized") {
+        log(`JWT 令牌校验失败（服务端报错）：${v.detail}`);
+        process.exit(3);
       }
       log(`系统回执 ${v.code}: ${v.detail || ""}`);
       return;

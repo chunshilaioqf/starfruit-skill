@@ -31,6 +31,45 @@ impl Mode {
     }
 }
 
+/// 部署模式：决定监听地址范围与安全要求（tls / jwt 是否必选）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deploy {
+    /// 本机模式：只监听 127.0.0.1；tls 与 jwt 均为可选项。
+    Local,
+    /// 局域网模式：监听本机局域网 IP；tls 与 jwt 均为可选项。
+    Lan,
+    /// 公网模式：必须指定具体 IP（禁止 0.0.0.0）；tls 与 jwt 均为必选项。
+    Public,
+}
+
+impl Deploy {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "local" | "本机" => Some(Deploy::Local),
+            "lan" | "局域网" => Some(Deploy::Lan),
+            "public" | "公网" => Some(Deploy::Public),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Deploy::Local => "local",
+            Deploy::Lan => "lan",
+            Deploy::Public => "public",
+        }
+    }
+
+    /// 中文描述（启动说明用）。
+    pub fn desc(&self) -> &'static str {
+        match self {
+            Deploy::Local => "本机模式（只监听 127.0.0.1；tls / jwt 可选）",
+            Deploy::Lan => "局域网模式（监听本机局域网 IP；tls / jwt 可选）",
+            Deploy::Public => "公网模式（须指定具体 IP；tls / jwt 必选）",
+        }
+    }
+}
+
 /// 首字节嗅探判定：连接模式与服务端不符时的处置。
 #[derive(Debug, PartialEq, Eq)]
 pub enum Sniff {

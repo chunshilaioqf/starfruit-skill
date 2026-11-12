@@ -34,7 +34,8 @@ a read-only web dashboard (animated message flow), an offline queue, message his
   - [Master options](#master-options-starfruit-master)
   - [Worker options](#worker-options)
   - [Run modes (plain / tls)](#run-modes-plain--tls)
-  - [Bind address rules (must follow)](#bind-address-rules-must-follow)
+  - [Deploy modes and listen address rules](#deploy-modes-and-listen-address-rules)
+  - [JWT token verification](#jwt-token-verification)
   - [Three deployment scenarios](#three-deployment-scenarios)
   - [Wake hooks](#wake-hooks-agent-integration-point)
   - [Running as a daemon](#running-as-a-daemon)
@@ -60,6 +61,8 @@ a read-only web dashboard (animated message flow), an offline queue, message his
 | **Wake hooks** | On `type=wake` a node runs a command / HTTP callback / sentinel file write, so an agent can be woken |
 | **Daemon mode** | `--daemon` detaches from the terminal and writes a pidfile plus logs; systemd / nohup also documented |
 | **No extra dependencies** | Workers use only their standard library (hand-rolled RFC6455); the hub embeds its static assets into the binary |
+| **Deploy modes** | `--deploy local\|lan\|public`: `local` binds loopback only (safest), `lan` binds a specific LAN IP, `public` requires a concrete IP plus `--mode tls` and JWT; wildcard `0.0.0.0` is always rejected |
+| **JWT tokens** | Master-issued HS256 tokens; workers must present `--token <token>`; the master verifies signature / expiry / owner and replies `unauthorized` then disconnects on failure |
 
 ---
 
@@ -69,12 +72,12 @@ a read-only web dashboard (animated message flow), an offline queue, message his
 flowchart TB
     subgraph LAN["LAN / local machine (multiple nodes per host)"]
         subgraph MASTER["Master node starfruit-master (Rust, one per network)"]
-            HUB["WS message hub<br/>--hub-addr 127.0.0.1:9501"]
+            HUB["WS message hub<br/>--hub-addr 127.0.0.1:10001"]
             TLSX["TLS endpoint<br/>--mode tls (self-signed or own certs)"]
             QUEUE["Offline queue<br/>200 FIFO entries per peer"]
             HIST["Message history<br/>ring buffer + JSONL"]
             WAKE["Wake event dispatch"]
-            WEB["Read-only dashboard<br/>--web-addr 127.0.0.1:9502<br/>HTTP + SSE"]
+            WEB["Read-only dashboard<br/>--web-addr 127.0.0.1:10002<br/>HTTP + SSE"]
         end
         N1["worker-a<br/>Rust: starfruit-node"]
         N2["worker-b<br/>Python: starfruit_node.py"]
@@ -189,14 +192,19 @@ cd nodes/rust  && cargo build --release     # produces nodes/rust/target/release
 ### 2) Start the master (the single manager)
 
 ```bash
-# Local-only by default (safest): hub 127.0.0.1:9501 + dashboard 127.0.0.1:9502
-./master/target/release/starfruit-master --mode plain --daemon
+# Local-only by default (safest): --deploy local binds loopback only —
+# hub 127.0.0.1:10001 + dashboard 127.0.0.1:10002
+./master/target/release/starfruit-master --deploy local --mode plain --daemon
 
 # Encrypted mode: a self-signed certificate is generated on first start (or supply --cert/--key)
-./master/target/release/starfruit-master --mode tls --daemon
+./master/target/release/starfruit-master --deploy local --mode tls --daemon
 
-# Other machines on the LAN need to join: bind your LAN IP (do not use 0.0.0.0)
-./master/target/release/starfruit-master --mode plain --hub-addr 192.168.1.10:9501 --daemon
+# Other machines on the LAN need to join: --deploy lan + bind your LAN IP (do not use 0.0.0.0)
+./master/target/release/starfruit-master --deploy lan --mode plain --hub-addr 192.168.1.10:10001 --daemon
+
+# Public access: --deploy public requires --mode tls and JWT; issue a token per worker first
+./master/target/release/starfruit-master --issue-token worker-a          # prints a token, then exits
+./master/target/release/starfruit-master --deploy public --mode tls --hub-addr 127.0.0.1:10001 --daemon
 ```
 
 On success the master prints a **startup notice** in the session: master name, run mode, hub and
@@ -208,13 +216,16 @@ bind-address rules.
 ```bash
 # Rust
 ./nodes/rust/target/release/starfruit-node --name worker-a --mode plain \
+  --server ws://127.0.0.1:10001 \
   --wake-cmd 'echo "$SF_FROM: $SF_TEXT" >> /path/to/agent-inbox.log'
 
 # Python (dependency-free)
-python3 nodes/python/starfruit_node.py --name worker-b --mode plain
+python3 nodes/python/starfruit_node.py --name worker-b --mode plain \
+  --server ws://127.0.0.1:10001
 
 # Node.js (dependency-free)
-node nodes/nodejs/starfruit-node.js --name worker-c --mode plain
+node nodes/nodejs/starfruit-node.js --name worker-c --mode plain \
+  --server ws://127.0.0.1:10001
 ```
 
 > **Which implementation to use is the agent's decision, based on the machine's environment**:
@@ -224,7 +235,7 @@ node nodes/nodejs/starfruit-node.js --name worker-c --mode plain
 ### 4) Open the dashboard
 
 ```bash
-open http://127.0.0.1:9502     # https:// under tls mode; the browser must trust the self-signed cert
+open http://127.0.0.1:10002     # https:// under tls mode; the browser must trust the self-signed cert
 ```
 
 ---
@@ -235,11 +246,16 @@ open http://127.0.0.1:9502     # https:// under tls mode; the browser must trust
 
 | Option | Default | Description |
 |---|---|---|
+| `--deploy local\|lan\|public` | `local` | Deployment mode: `local` binds loopback only (safest), `lan` binds a LAN IP, `public` requires a concrete IP + `--mode tls` + JWT (see [Deploy modes](#deploy-modes-and-listen-address-rules)) |
 | `--mode plain\|tls` | `plain` | Run mode: unencrypted `ws://` / encrypted `wss://` |
-| `--hub-addr <addr>` | `127.0.0.1:9501` | Bind address of the WS hub (`0.0.0.0` is **rejected**) |
-| `--web-addr <addr>` | `127.0.0.1:9502` | Bind address of the read-only dashboard (`0.0.0.0` is **rejected**) |
+| `--hub-addr <addr>` | `127.0.0.1:10001` | Bind address of the WS hub (`0.0.0.0` is **rejected**; port must be ≥ 10001, auto +1 if in use) |
+| `--web-addr <addr>` | `127.0.0.1:10002` | Bind address of the read-only dashboard (`0.0.0.0` is **rejected**; port must be ≥ 10001, auto +1 if in use) |
 | `--cert <path>` | auto-generated | TLS certificate PEM (a self-signed cert is created under `--data-dir` by default) |
 | `--key <path>` | auto-generated | TLS private key PEM (provide together with `--cert`) |
+| `--jwt-secret <s>` | auto-generated | JWT signing secret; if omitted, a 32-byte random hex secret is generated at `data-dir/jwt-secret` (mode 0600) |
+| `--jwt-ttl <secs>` | `86400` | JWT token lifetime in seconds |
+| `--require-jwt` | off | Force JWT verification in `local` / `lan` mode (`public` mode is always on) |
+| `--issue-token <node>` | none | Issue a JWT token for the named node, print it and exit (does not start the service) |
 | `--data-dir <dir>` | `./starfruit-data` | Runtime data directory (logs / pid / history / wake) |
 | `--manager-name <name>` | `manager` | Registration name of the built-in manager endpoint |
 | `--wake-cmd <shell>` | none | Wake hook: run a command (`SF_FROM/SF_TO/SF_TEXT/SF_TS` injected) |
@@ -254,10 +270,11 @@ All three implementations share the same options:
 
 | Option | Default | Description |
 |---|---|---|
-| `--server <url>` | `ws://127.0.0.1:9501` | Master address (`ws://` or `wss://`; use the master's LAN IP / tunnel domain across machines) |
+| `--server <url>` | `ws://127.0.0.1:10001` | Master address (`ws://` or `wss://`; use the master's LAN IP / tunnel domain across machines) |
 | `--name <name>` | required | Node name, **unique network-wide** (reconnecting with the same name evicts the old connection) |
 | `--role <role>` | `worker` | Role label (`manager` / `worker`, display only) |
 | `--mode plain\|tls` | `plain` | **Must match the master**, otherwise the master reports an error and disconnects |
+| `--token <jwt>` | none | JWT token issued by the master (`--issue-token <this node's name>`); required whenever the master enforces JWT |
 | `--data-dir <dir>` | `./starfruit-data` | Runtime data directory (logs / pid / `wake.log`) |
 | `--wake-cmd <sh>` | none | Wake hook: shell command (`SF_FROM/SF_TO/SF_TEXT/SF_TS` injected) |
 | `--wake-url <url>` | none | Wake hook: HTTP POST JSON `{"from","to","text","ts"}` |
@@ -278,25 +295,48 @@ All three implementations share the same options:
 - In `tls` mode a self-signed certificate is generated on first start and can be replaced with your own
   via `--cert` / `--key`; workers trust self-signed certificates by default, or can pin a CA with `--ca-cert`.
 
-### Bind address rules (must follow)
+### Deploy modes and listen address rules
 
-| Scenario | `--hub-addr` / `--web-addr` | Notes |
-|---|---|---|
-| Local multi-agent use only | `127.0.0.1` (**default**) | Safest; other machines cannot connect |
-| Multi-machine LAN collaboration | the host's LAN IP (e.g. `192.168.1.10`) | Lets other LAN machines join |
-| Public access required | local address + **Cloudflare Tunnel** | The tunnel exposes it publicly; `--mode tls` is **required** |
+`--deploy` selects how far the node is exposed. The default (and safest) is `local`.
+
+| `--deploy` | `--hub-addr` / `--web-addr` | tls | jwt | Notes |
+|---|---|---|---|---|
+| `local` (**default**) | loopback only (`127.0.0.1`) | optional | optional | Safest; other machines cannot connect. A non-loopback address is **rejected** |
+| `lan` | the host's LAN IP (e.g. `192.168.1.10`); a loopback address is **rejected** | optional | optional | Lets other LAN machines join; `0.0.0.0` is forbidden |
+| `public` | a concrete IP (a concrete `127.0.0.1` is fine behind a tunnel) | **required** (`--mode tls`) | **forced on** | Meant for Cloudflare Tunnel; a public deploy without tls aborts start-up (exit code 1) |
+
+Ports: every mode defaults to `10001` for the hub and `10002` for the dashboard, must be ≥ `10001`,
+and are auto-incremented by 1 when a port is already in use (up to 100 tries).
 
 > ⛔ **Never bind `0.0.0.0`** (nor `::`): the master **refuses** wildcard addresses and exits with
 > code 1, preventing accidental exposure on every interface. When bound to a non-local address in
 > `plain` mode, the master additionally prints a `[warn]` line.
+
+### JWT token verification
+
+- **When it is enforced**: `public` deploy mode always enforces it; `local` / `lan` are optional and
+  can be turned on with `--require-jwt`. When enforced, every worker must register with a valid
+  `token` field.
+- **Issuing (master only)**: tokens can only be signed by the master, and only a matching secret
+  validates them. Print one with
+  `starfruit-master --issue-token <node> [--jwt-secret <s>] [--jwt-ttl <secs>]` (it prints the token
+  and exits without starting the service).
+- **Using (worker)**: start the worker with `--token <token>` (all three clients support it).
+- **Algorithm & claims**: HS256; `iss=starfruit-master`, `sub=<node name>`, `iat`, `exp`
+  (`--jwt-ttl`, default `86400` seconds). A token is not transferable between nodes (the `sub` is
+  checked) and an expired token is rejected.
+- **Secret**: `--jwt-secret` if given, otherwise generated automatically as 32 random bytes (hex) at
+  `data-dir/jwt-secret` with mode `0600`.
+- **Failure semantics**: a missing or invalid token makes the master reply `unauthorized` and
+  disconnect; the Rust / Python / Node.js clients exit with code 3.
 
 ### Three deployment scenarios
 
 **Scenario A: local multi-agent (default, safest)**
 
 ```bash
-# Master: bind 127.0.0.1 only
-./master/target/release/starfruit-master --mode plain --daemon
+# Master: --deploy local binds 127.0.0.1 only
+./master/target/release/starfruit-master --deploy local --mode plain --daemon
 
 # Workers on the same machine (names must be unique)
 python3 nodes/python/starfruit_node.py --name agent-1 --mode plain --daemon
@@ -306,28 +346,33 @@ node    nodes/nodejs/starfruit-node.js --name agent-2 --mode plain --daemon
 **Scenario B: multi-machine LAN collaboration**
 
 ```bash
-# Master: bind the host's LAN IP (example: 192.168.1.10)
-./master/target/release/starfruit-master --mode plain \
-  --hub-addr 192.168.1.10:9501 --web-addr 192.168.1.10:9502 --daemon
+# Master: --deploy lan + bind the host's LAN IP (example: 192.168.1.10)
+./master/target/release/starfruit-master --deploy lan --mode plain \
+  --hub-addr 192.168.1.10:10001 --web-addr 192.168.1.10:10002 --daemon
 
 # Workers on other machines: point --server at the master's LAN IP
 python3 nodes/python/starfruit_node.py --name worker-b --mode plain \
-  --server ws://192.168.1.10:9501 --daemon
+  --server ws://192.168.1.10:10001 --daemon
 ```
 
-**Scenario C: public access (Cloudflare Tunnel + encryption)**
+**Scenario C: public access (Cloudflare Tunnel + encryption + JWT)**
 
 ```bash
-# Master: encrypted mode, still bound to a local address (the tunnel forwards traffic;
-# do not bind 0.0.0.0)
-./master/target/release/starfruit-master --mode tls --hub-addr 127.0.0.1:9501 --daemon
+# Master: --deploy public, still bound to a local address (the tunnel forwards traffic;
+# do not bind 0.0.0.0). Public mode requires --mode tls and enforces JWT.
+./master/target/release/starfruit-master --deploy public --mode tls --hub-addr 127.0.0.1:10001 --daemon
 
-# Expose local port 9501 through Cloudflare Tunnel (example)
-cloudflared tunnel --url http://127.0.0.1:9501
-# Remote workers connect to the tunnel domain over wss:// with --mode tls
+# Issue a token for each worker (prints the token, then exits; not tied to the running service)
+./master/target/release/starfruit-master --issue-token worker-b
+
+# Expose local port 10001 through Cloudflare Tunnel (example)
+cloudflared tunnel --url http://127.0.0.1:10001
+# Remote workers connect to the tunnel domain over wss:// with --mode tls and --token
+./nodes/rust/target/release/starfruit-node --name worker-b --mode tls \
+  --server wss://<tunnel-domain> --token <token> --daemon
 ```
 
-> Public exposure **must** use `tls`; `plain` is only advisable on a trusted LAN.
+> Public exposure **must** use `tls` and JWT; `plain` is only advisable on a trusted LAN.
 
 ### Wake hooks (agent integration point)
 
@@ -357,7 +402,7 @@ Processes are independent of any agent session; systemd unit examples and the no
 
 ### Read-only web dashboard
 
-- URL: `http://127.0.0.1:9502` (`https://` in `tls` mode);
+- URL: `http://127.0.0.1:10002` (`https://` in `tls` mode);
 - **No auth, read-only**: node topology (canvas particle animation), message flow, history
   (paging / filtering) and stats;
 - Main endpoints: `GET /`, `GET /api/nodes`, `GET /api/messages?limit=&before=`, `GET /events` (SSE).
@@ -371,8 +416,9 @@ See [docs/protocol.md](docs/protocol.md) for the full starfruit protocol v2.
 - **Frame**: JSON text `{"from","to","type","text","ts"}`; `to` accepts `"all"` for broadcast
   (a sender never receives its own broadcast);
 - **Types**: `task / status / done / blocked / idle / notice / chat / wake`;
-- **Register**: first frame `{"action":"register","from":"<name>","role":"worker|manager","mode":"plain|tls","ver":2}`;
-- **Receipts**: `registered / sent / queued / queued_delivered / broadcast_ok / no_such_peer / bad_msg / warn / mode_mismatch`;
+- **Register**: first frame `{"action":"register","from":"<name>","role":"worker|manager","mode":"plain|tls","ver":2}`,
+  plus an optional `"token":"<jwt>"` field whenever the master enforces JWT;
+- **Receipts**: `registered / sent / queued / queued_delivered / broadcast_ok / no_such_peer / bad_msg / warn / mode_mismatch / unauthorized`;
 - **Offline queue**: messages for an offline peer are queued (200 FIFO entries per peer) and delivered
   after it registers; broadcasts are not replayed.
 
@@ -423,7 +469,6 @@ Project conventions (commit messages, documentation language, verification requi
 |---|---|
 | [SKILL.md](SKILL.md) | Skill entry point: components, quickstart, protocol summary, operations notes (Chinese) |
 | [docs/protocol.md](docs/protocol.md) | starfruit protocol v2 (topology / dual mode / error semantics / receipts / wake) |
-| [docs/2026-11-12-多Agent-WS协同开发全流程经验总结.md](docs/2026-11-12-多Agent-WS协同开发全流程经验总结.md) | Methodology source (manager / workers / inspection / acceptance / pitfalls) |
 | [docs/skill-plan.md](docs/skill-plan.md) | Skill plan (feature list / design decisions / acceptance criteria) |
 | [docs/naming.md](docs/naming.md) | Naming rationale (starfruit = a star-shaped cross-section = star topology) |
 | [docs/daemon.md](docs/daemon.md) | Daemon operation (`--daemon` / systemd / nohup) and wake hooks |

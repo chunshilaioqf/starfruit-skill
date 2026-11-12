@@ -1,6 +1,6 @@
 [package]
 name = "starfruit-master"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "starfruit 主节点（管理者）：局域网多节点 WS 消息枢纽 + 只读 Web 可视化面板，支持 plain/tls 双模式"
 
@@ -16,6 +16,8 @@ tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["std", "logging", "ring", "tls12"] }
 rustls-pemfile = "2"
 rcgen = "0.13"
+ring = "0.17"
+base64 = "0.22"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 libc = "0.2"
 

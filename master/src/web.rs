@@ -14,20 +14,14 @@ const INDEX_HTML: &str = include_str!("../static/index.html");
 const STYLE_CSS: &str = include_str!("../static/style.css");
 const APP_JS: &str = include_str!("../static/app.js");
 
-/// 启动面板监听（TLS 模式复用主节点证书）。
+/// 启动面板监听（TLS 模式复用主节点证书）；监听套接字由调用方绑定（支持端口占用 +1）。
 pub async fn serve(
     state: Arc<State>,
+    listener: tokio::net::TcpListener,
     addr: String,
     mode: Mode,
     tls: Option<tokio_rustls::TlsAcceptor>,
 ) {
-    let listener = match tokio::net::TcpListener::bind(&addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("[web] 面板无法绑定 {addr}: {e}");
-            return;
-        }
-    };
     eprintln!(
         "[web] 只读面板监听 {}://{}",
         if mode == Mode::Tls { "https" } else { "http" },
