@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# starfruit 端到端自测：主节点 + 三语言子节点 + 双模式报错 + 面板 API + wake + 离线队列。
+# starfruit 端到端自测：主节点 + 三语言子节点 + 双模式报错 + 面板 API + wake + 离线队列 + 工作团队。
 # 用法: bash tests/e2e.sh   （需已编译 master 与 nodes/rust；需 python3 与 node）
 set -u
 
@@ -191,6 +191,34 @@ python3 "$NODE_PY" --name worker-pub --mode tls --server wss://127.0.0.1:19741 \
 echo $! > "$WORK/worker-pub.pid"
 sleep 1.5
 check "公网模式（tls）携带令牌注册成功" "grep -q 'registered' $WORK/worker-pub.log"
+
+echo "── 12. 工作团队（--init-team / --team）与保活/唤醒桥脚本 ──"
+TEAM_DIR="$WORK/team"; mkdir -p "$TEAM_DIR"
+check "--init-team 写出团队配置模板" \
+  "'$MASTER' --init-team '$TEAM_DIR/team.json' 2>&1 | grep -q '已写出工作团队配置模板'"
+check "团队模板含成员定义（worker-a）" "grep -q 'worker-a' '$TEAM_DIR/team.json'"
+"$MASTER" --hub-addr 127.0.0.1:19751 --web-addr 127.0.0.1:19752 \
+  --data-dir "$TEAM_DIR" --team "$TEAM_DIR/team.json" >"$WORK/master-team.log" 2>&1 &
+echo $! > "$WORK/master-team.pid"
+sleep 1
+check "加入提示词含脱离会话后台运行（--daemon）" "grep -q -- '--daemon' $WORK/master-team.log"
+check "加入提示词含保活脚本提示" "grep -q 'starfruit-keepalive.sh' $WORK/master-team.log"
+check "加入提示词含 hooks 唤醒桥提示" "grep -q 'starfruit-wake-bridge.sh' $WORK/master-team.log"
+check "提示词已落盘 team-prompts.md" "[ -f '$TEAM_DIR/team-prompts.md' ]"
+check "面板 /api/team 返回成员 JSON（含 prompt）" "curl -sf http://127.0.0.1:19752/api/team | grep -q '\"prompt\"'"
+check "面板 /api/team 含成员 worker-a" "curl -sf http://127.0.0.1:19752/api/team | grep -q 'worker-a'"
+check "面板 /team 页面含一键复制脚本" "curl -sf http://127.0.0.1:19752/team | grep -q 'starfruitCopy'"
+check "面板 /team-prompts.md 可访问（含成员）" "curl -sf http://127.0.0.1:19752/team-prompts.md | grep -q 'worker-a'"
+"$MASTER" --hub-addr 127.0.0.1:19761 --web-addr 127.0.0.1:19762 \
+  --data-dir "$WORK/team-remind" >"$WORK/master-remind.log" 2>&1 &
+echo $! > "$WORK/master-remind.pid"
+sleep 1
+check "未配置团队时启动提醒用户可选配置" "grep -q '工作团队（可选）' $WORK/master-remind.log"
+check "未配置团队时 /api/team 返回 team:null" "curl -sf http://127.0.0.1:19762/api/team | grep -q '\"team\":null'"
+check "保活脚本：正常退出（exit 0）不重启" \
+  "bash '$ROOT/scripts/starfruit-keepalive.sh' true 2>&1 | grep -q '正常退出'"
+check "唤醒桥：缺少参数时提示用法" \
+  "bash '$ROOT/scripts/starfruit-wake-bridge.sh' 2>&1 | grep -q '用法'"
 
 echo
 echo "════════ 结果: ✅ $PASS 通过 / ❌ $FAIL 失败 ════════"

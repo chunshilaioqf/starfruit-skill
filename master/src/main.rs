@@ -8,6 +8,7 @@ mod agent;
 mod auth;
 mod hub;
 mod protocol;
+mod team;
 mod tls;
 mod web;
 
@@ -16,6 +17,7 @@ use std::sync::Arc;
 
 use auth::TokenAuth;
 use protocol::{Deploy, Mode, State};
+use team::{JoinCtx, Team};
 
 struct Config {
     deploy: Deploy,
@@ -33,6 +35,8 @@ struct Config {
     jwt_ttl: u64,
     require_jwt: bool,
     issue_token: Option<String>,
+    team: Option<PathBuf>,
+    init_team: Option<PathBuf>,
     daemon: bool,
     daemon_child: bool,
 }
@@ -59,6 +63,9 @@ const HELP: &str = r#"starfruit-master —— 多节点 WS 协同主节点（管
   --jwt-ttl <secs>      JWT 令牌有效期秒数（默认 86400）
   --require-jwt         local/lan 模式下手动启用 JWT 令牌校验（公网模式强制启用）
   --issue-token <name>  为指定节点签发 JWT 令牌并打印后退出（不启动服务）
+  --team <team.json>    加载工作团队定义：为主节点生成每位成员"加入团队"的完整提示词
+                        （终端可复制 + 落盘 data-dir/team-prompts.md + 面板 /team 查看）
+  --init-team <path>    写出工作团队配置模板到 <path> 并退出（用户填写后用 --team 加载）
   --data-dir <dir>      运行数据目录（日志/pid/历史/wake，默认 ./starfruit-data）
   --manager-name <name> 内置管理者端点的注册名（默认 manager）
   --wake-cmd <shell>    wake 唤醒钩子：命令（环境变量 SF_FROM/SF_TO/SF_TEXT/SF_TS）
@@ -196,6 +203,17 @@ async fn bind_with_retry(addr: &str) -> Result<(tokio::net::TcpListener, String)
     Err(format!("绑定 {addr} 失败：连续 100 个端口均被占用"))
 }
 
+/// 组装团队提示词上下文（真实 hub 地址 / 模式 / 是否需令牌 / 数据目录）。
+fn join_ctx(cfg: &Config, mode: Mode, hub_addr: &str, jwt_required: bool) -> JoinCtx {
+    let scheme = if mode == Mode::Tls { "wss" } else { "ws" };
+    JoinCtx {
+        server: format!("{scheme}://{hub_addr}"),
+        mode: mode.as_str().to_string(),
+        token_required: jwt_required,
+        data_dir: cfg.data_dir.display().to_string(),
+    }
+}
+
 /// 启动成功后打印的会话说明：主节点信息 + 子节点加入方式 + 部署/监听规则。
 fn print_banner(cfg: &Config, hub_addr: &str, web_addr: &str, jwt_required: bool) {
     let scheme = if cfg.mode == Mode::Tls { "wss" } else { "ws" };
@@ -259,6 +277,8 @@ fn parse_args() -> Config {
         jwt_ttl: auth::DEFAULT_TTL_SECS,
         require_jwt: false,
         issue_token: None,
+        team: None,
+        init_team: None,
         daemon: false,
         daemon_child: false,
     };
@@ -288,6 +308,8 @@ fn parse_args() -> Config {
             }
             "--require-jwt" => cfg.require_jwt = true,
             "--issue-token" => cfg.issue_token = Some(val("--issue-token")),
+            "--team" => cfg.team = Some(PathBuf::from(val("--team"))),
+            "--init-team" => cfg.init_team = Some(PathBuf::from(val("--init-team"))),
             "--data-dir" => cfg.data_dir = PathBuf::from(val("--data-dir")),
             "--manager-name" => cfg.manager_name = val("--manager-name"),
             "--wake-cmd" => cfg.wake_cmd = Some(val("--wake-cmd")),
@@ -345,6 +367,22 @@ fn daemonize(cfg: &Config) {
 
 fn main() {
     let cfg = parse_args();
+
+    // --init-team：写出团队配置模板后退出（不启动服务）。
+    if let Some(path) = cfg.init_team.clone() {
+        match std::fs::write(&path, Team::template()) {
+            Ok(_) => {
+                println!("已写出工作团队配置模板: {}", path.display());
+                eprintln!("[team] 请编辑该文件填写成员（name/role/note），然后以 `--team {}` 启动主节点。", path.display());
+            }
+            Err(e) => {
+                eprintln!("[fatal] 写出团队模板 {} 失败: {e}", path.display());
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     std::fs::create_dir_all(&cfg.data_dir).expect("创建 data-dir 失败");
 
     // JWT 校验器：公网模式强制；local/lan 需 --require-jwt；--issue-token 亦需构造（签发用）。
@@ -457,34 +495,7 @@ async fn run(
         cfg.data_dir.display()
     );
 
-    // Web 只读面板（端口占用自动 +1）。
-    let (web_listener, web_addr) = match bind_with_retry(&cfg.web_addr).await {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("[fatal] web {e}");
-            std::process::exit(1);
-        }
-    };
-    tokio::spawn(web::serve(
-        state.clone(),
-        web_listener,
-        web_addr.clone(),
-        cfg.mode,
-        acceptor.clone(),
-    ));
-
-    // 内置管理者端点（inbox/outbox/wake）。
-    tokio::spawn(agent::run(
-        state.clone(),
-        agent::AgentCfg {
-            name: cfg.manager_name.clone(),
-            data_dir: cfg.data_dir.clone(),
-            wake_cmd: cfg.wake_cmd.clone(),
-            wake_url: cfg.wake_url.clone(),
-        },
-    ));
-
-    // WS 消息枢纽（端口占用自动 +1）。
+    // WS 消息枢纽（端口占用自动 +1）；先绑定，便于把真实地址写入团队提示词。
     let (listener, hub_addr) = match bind_with_retry(&cfg.hub_addr).await {
         Ok(v) => v,
         Err(e) => {
@@ -499,6 +510,49 @@ async fn run(
         hub_addr
     );
 
+    // 工作团队：加载定义 → 生成每位成员"加入团队"提示词视图。
+    let team_def = match &cfg.team {
+        Some(path) => match Team::load(path) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                eprintln!("[fatal] {e}");
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
+    let team_view = team_def.as_ref().map(|t| {
+        Arc::new(t.view(&join_ctx(&cfg, mode, &hub_addr, jwt)))
+    });
+
+    // Web 只读面板（端口占用自动 +1）。
+    let (web_listener, web_addr) = match bind_with_retry(&cfg.web_addr).await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[fatal] web {e}");
+            std::process::exit(1);
+        }
+    };
+    tokio::spawn(web::serve(
+        state.clone(),
+        web_listener,
+        web_addr.clone(),
+        cfg.mode,
+        acceptor.clone(),
+        team_view.clone(),
+    ));
+
+    // 内置管理者端点（inbox/outbox/wake）。
+    tokio::spawn(agent::run(
+        state.clone(),
+        agent::AgentCfg {
+            name: cfg.manager_name.clone(),
+            data_dir: cfg.data_dir.clone(),
+            wake_cmd: cfg.wake_cmd.clone(),
+            wake_url: cfg.wake_url.clone(),
+        },
+    ));
+
     // 明文监听非本机地址时给出提示：公网务必用 Cloudflare Tunnel + tls + jwt。
     if mode == Mode::Plain && !is_loopback_host(host_of(&hub_addr)) {
         eprintln!(
@@ -510,6 +564,25 @@ async fn run(
 
     // 启动成功说明（会话提示）。
     print_banner(&cfg, &hub_addr, &web_addr, jwt);
+
+    // 工作团队：已配置则打印提示词并落盘；未配置则提示用户可选配置。
+    match (&team_def, &team_view) {
+        (Some(t), Some(view)) => {
+            team::print_prompts(t, &view.prompts);
+            let path = team::prompts_path(&cfg.data_dir);
+            match std::fs::write(&path, &view.markdown) {
+                Ok(_) => {
+                    let web_scheme = if mode == Mode::Tls { "https" } else { "http" };
+                    eprintln!(
+                        "[team] 提示词已落盘 {}（面板查看: {web_scheme}://{web_addr}/team）",
+                        path.display()
+                    );
+                }
+                Err(e) => eprintln!("[team] 写入 {} 失败: {e}", path.display()),
+            }
+        }
+        _ => team::print_reminder(),
+    }
 
     loop {
         tokio::select! {

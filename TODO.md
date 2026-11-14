@@ -86,3 +86,13 @@
 - 方案：以自建 SVG（五角星 + 径向渐变 + 高光）为矢量源，用 `rsvg-convert` 渲染为各尺寸透明 PNG；面板图标经 `include_bytes!` 内嵌到 `web.rs` 并按路径返回，兼容 `/favicon.svg` 与 `/favicon.ico`
 - 风险：环境无 cairosvg，改用 rsvg-convert 渲染；`/favicon.ico` 实际回 PNG（现代浏览器可识别）
 - 备注/进度：已完成。docs/assets 新增 icon.svg 与 icon{512,256,128,64,32}.png、apple-touch-icon.png（180）；master/static/img 新增 logo.svg 与 favicon-{32,64,128,256}.png、apple-touch-icon.png；实测 PNG 为 srgba 透明（角落 alpha=0，非透明像素占比 28.66%），形状为五角星；面板 7 条图标路径实测均 200 且 content-type 正确；e2e 新增 3 条断言，共 42 通过 / 0 失败；VERSION 0.8.0
+
+### T-11 后台保活 + hooks 被动唤醒 + 工作团队（team）
+- 状态：已完成
+- 创建：2026-11-15　完成：2026-11-15
+- 目标：①告知各 agent 节点启动须**脱离会话后台运行**并**自建保活机制**；②**复用 agent 的 hooks 技术被动接收主节点任务、唤醒当前 agent 继续工作**；③主节点启动完成后**提醒是否配置工作团队**，已配置则为每位成员生成「加入团队」完整提示词，放在**代码区**方便复制。
+- 验收标准：①`--daemon` 语义与保活脚本 `scripts/starfruit-keepalive.sh` 可用且文档化；②提供 hooks 唤醒桥 `scripts/starfruit-wake-bridge.sh`（`tail -F wake.log` → 唤醒会话）；③`--init-team`/`--team` 生成每位成员提示词，输出到会话 / `team-prompts.md` / 面板 `/team`（含一键复制）；④未配置团队时启动提醒；⑤e2e 与单测复跑全通过；⑥版本与 CHANGELOG 同步。
+- 涉及：master/src/team.rs、master/src/main.rs、master/src/web.rs、scripts/、SKILL.md、README.md、README.en.md、docs/daemon.md、docs/protocol.md、tests/e2e.sh、CHANGELOG.md、VERSION、master/Cargo.toml、nodes/rust/Cargo.toml
+- 方案：新增 `team.rs`（解析 + 提示词生成 + 视图）与 `--team`/`--init-team`；重排 `run()` 先绑定 hub 再生成提示词；面板新增 `/team`、`/api/team`、`/team-prompts.md`；新增两个 shell 脚本；文档三处同步提示词与保活/唤醒用法。
+- 风险：提示词内含 `--`、`|` 等字符，e2e 断言需 `grep -q --` 规避选项解析；markdown 内 ```text 反引号在 bash 双引号下会触发命令替换（改用成员名断言规避）。
+- 备注/进度：已完成。master clippy 0 警告、14 单测通过；e2e 新增第 12 段 14 条断言，共 56 通过 / 0 失败；VERSION 0.9.0。

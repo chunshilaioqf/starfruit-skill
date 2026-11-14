@@ -1,6 +1,6 @@
 ---
 name: starfruit
-description: "局域网多 Agent/多节点 WS 协同基建：唯一主节点（Rust，含只读 Web 可视化面板）+ 多种子节点（Rust/Python/Node.js），支持加密(wss)/非加密(ws)双模式、模式不匹配向对方报错、离线队列、消息历史与唤醒钩子。适用于需要多节点后台协同、任务派发/上报、消息流转可视化与唤醒对话对接的场景。"
+description: "局域网多 Agent/多节点 WS 协同基建：唯一主节点（Rust，含只读 Web 可视化面板）+ 多种子节点（Rust/Python/Node.js），支持加密(wss)/非加密(ws)双模式、模式不匹配向对方报错、离线队列、消息历史；所有节点后台运行并自建保活，复用 agent hooks 被动唤醒会话，主节点可生成工作团队「加入团队」提示词。适用于需要多节点后台协同、任务派发/上报、消息流转可视化与唤醒对话对接的场景。"
 metadata: { "openclaw": { "emoji": "⭐" } }
 ---
 
@@ -8,7 +8,9 @@ metadata: { "openclaw": { "emoji": "⭐" } }
 
 星型拓扑消息枢纽：**一个主节点（管理者，全网唯一）+ 任意多个子节点（执行者）**。
 一机可跑多节点；协议支持加密/非加密双模式；主节点带只读 Web 面板（消息流动画）。
-所有节点都是**脱离 agent 会话的后台进程**，通过 **wake 钩子**唤醒对话（钩子由 agent 自行对接）。
+所有节点都是**脱离 agent 会话的后台进程**，自建**保活**机制常驻在线，并复用 agent 的
+**hooks 技术被动接收主节点任务、唤醒当前 agent 继续工作**。
+主节点启动后可一键生成**工作团队**各成员"加入团队"的完整提示词。
 
 方法论来源：`docs/skill-plan.md`；
 协议契约：`docs/protocol.md`（v2）；命名由来：`docs/naming.md`。
@@ -17,7 +19,8 @@ metadata: { "openclaw": { "emoji": "⭐" } }
 
 - 需要局域网内多执行者（人类 CLI、脚本、其他 agent）协同开发/作业，任务派发 + 上报；
 - 需要可视化观察节点在线状态与消息流转、回看消息历史；
-- 需要进程常驻后台、不依赖会话存活，且可被消息"唤醒对话"。
+- 需要进程常驻后台、不依赖会话存活，且可被消息"唤醒对话"（hooks 被动唤醒）；
+- 需要为一组 agent 编排分工（工作团队），并分发统一格式的"加入团队"提示词。
 
 ## 组件一览
 
@@ -27,6 +30,9 @@ metadata: { "openclaw": { "emoji": "⭐" } }
 | `starfruit-node` | Rust | `nodes/rust/` | 子节点（编译型，功能全） |
 | `starfruit_node.py` | Python 3 | `nodes/python/` | 子节点（仅标准库，可直接运行） |
 | `starfruit-node.js` | Node.js ≥18 | `nodes/nodejs/` | 子节点（仅内置模块，可直接运行） |
+| `starfruit-keepalive.sh` | Bash | `scripts/` | 保活（watchdog）：监督节点进程，异常退出按 2s→30s 退避重启 |
+| `starfruit-wake-bridge.sh` | Bash | `scripts/` | hooks 唤醒桥：`tail -F wake.log` 被动接收任务并唤醒 agent 会话 |
+| `starfruit-team.example.json` | JSON | `scripts/` | 工作团队配置示例（`--init-team` 模板一致） |
 
 > ⚠️ **不提供二进制**：Rust 组件由用户安装本 SKILL 后**本地编译**（下文 Quickstart）。
 
@@ -66,7 +72,8 @@ cd <skill目录>/nodes/rust && cargo build --release # 产出 nodes/rust/target/
 **主节点参数**：`--deploy <local|lan|public>`（默认 `local`）、`--mode <plain|tls>`、
 `--hub-addr <IP:PORT>` / `--web-addr <IP:PORT>`（端口 **≥10001**，默认 hub `10001` / 面板 `10002`，
 被占用时自动 +1）、`--cert` / `--key`、`--jwt-secret <密钥>`（缺省自动生成 `data-dir/jwt-secret`，权限 0600）、
-`--jwt-ttl <秒>`（默认 86400）、`--require-jwt`、`--issue-token <节点名>`（签发后打印并退出）、`--daemon`。
+`--jwt-ttl <秒>`（默认 86400）、`--require-jwt`、`--issue-token <节点名>`（签发后打印并退出）、
+`--team <team.json>` / `--init-team <path>`（工作团队定义/模板，见下文）、`--daemon`。
 
 **JWT 令牌**：令牌**只能由主节点签发**（`--issue-token <节点名>`，签发后打印并退出）；所有子节点连接时
 **必须 `--token <令牌>`** 校验；令牌缺失或校验失败时回执 `unauthorized` 并断开连接（客户端退出码 3）。
@@ -120,8 +127,17 @@ node nodes/nodejs/starfruit-node.js --name worker-c --mode plain
 - `--wake-url <url>`：POST JSON `{"from","to","text","ts"}`；
 - 哨兵文件（默认）：`<data-dir>/wake.log` 追加 JSONL，agent 可 `tail -f` 唤醒会话。
 
-**agent 对接方式（推荐）**：把 `--wake-cmd` 指向自己的唤醒入口（拉起会话的 CLI/脚本），
-或监控 `wake.log`。节点不绑定任何具体 agent 实现。
+**agent 对接方式（推荐，复用 agent 的 hooks 技术被动唤醒）**：
+- 直接把 `--wake-cmd` 指向自己的唤醒入口（拉起/恢复会话的 CLI 或脚本）；
+- 或将 `scripts/starfruit-wake-bridge.sh` 注册为 agent 的常驻 hook：它 `tail -F <data-dir>/wake.log`，
+  每读到一行即用 `STARFRUIT_WAKE_CMD` 唤醒当前会话（并注入 `SF_FROM/SF_TO/SF_TEXT/SF_TS`）：
+
+```bash
+STARFRUIT_WAKE_CMD='<你的 agent 唤醒命令>' \
+  scripts/starfruit-wake-bridge.sh starfruit-data/worker-a/wake.log
+```
+
+节点不绑定任何具体 agent 实现。
 
 ## 协议摘要（详见 docs/protocol.md）
 
@@ -131,11 +147,41 @@ node nodes/nodejs/starfruit-node.js --name worker-c --mode plain
 - 回执：`registered / sent / queued / queued_delivered / broadcast_ok / no_such_peer / bad_msg / warn / mode_mismatch / unauthorized`；
 - 离线队列：定向消息对端不在线暂存（每对端 200 条 FIFO），注册后自动投递；广播不补发。
 
-## 后台运行（脱离会话）
+## 后台运行与保活（脱离会话）
 
-- 所有节点支持 `--daemon`（脱离终端、写 `<data-dir>/<name>.pid` 与 `<name>.log`）；
-- systemd unit 示例见 `docs/daemon.md`；nohup 方式亦可；
-- 进程与任何 agent 会话生命周期无关；重启/守护由用户或 systemd 负责。
+> ⚠️ **agent 须知**：所有节点都**必须以脱离本 agent 会话的方式后台运行**（`--daemon` / `nohup` /
+> systemd），并**自行建立保活机制**；会话结束或 agent 退出都不得导致节点退出。
+
+- **后台运行**：所有节点支持 `--daemon`（`setsid` 脱离终端、写 `<data-dir>/<name>.pid` 与 `<name>.log`）；
+  nohup 与 systemd unit 示例见 `docs/daemon.md`；
+- **保活（三选一）**：
+  1. `scripts/starfruit-keepalive.sh <节点命令...>`：watchdog，异常退出按 2s→30s 指数退避重启；
+  2. systemd `Restart=always`（`RestartSec` 控制退避）；
+  3. nohup + 自行守护。
+- 停进程**只按 PID/端口精确清理**，禁止宽模式 `pkill -f`；
+- 进程与任何 agent 会话生命周期无关。
+
+## 工作团队（team）
+
+多执行者分工时，主节点可加载一份团队定义，为**每位成员**自动生成一段**完整的"加入团队"提示词**
+（内含后台运行、保活、hooks 被动唤醒、就绪上报四步），方便复制分发给对应 agent。
+
+```bash
+# ① 生成模板（写明 team 名与 members：name/role/note）后退出
+./master/target/release/starfruit-master --init-team team.json
+# ② 编辑 team.json 填写成员，再以 --team 启动主节点（其余参数照常）
+./master/target/release/starfruit-master --deploy local --mode plain --team team.json --daemon
+```
+
+未配置团队时，主节点启动后会**在会话中提醒是否配置工作团队**；已配置时，提示词同时出现在三处「代码区」：
+
+| 位置 | 说明 |
+|---|---|
+| **会话输出** | 每位成员一段，以 ```text 代码块包裹，可直接复制 |
+| **`<data-dir>/team-prompts.md`** | 落盘 Markdown，每成员一节（含 ```text 代码块） |
+| **面板 `/team`** | 网页 `<pre><code>` + 「复制提示词」按钮（`navigator.clipboard` 一键复制） |
+
+配套只读接口：`GET /team`（页面）、`GET /api/team`（JSON）、`GET /team-prompts.md`（Markdown）。
 
 ## 运维须知（来自实战经验总结）
 
@@ -151,7 +197,8 @@ SKILL.md                          ← 本文件
 docs/protocol.md                  ← 协议 v2（双模式/报错语义/回执码）
 docs/skill-plan.md                ← 方法论（含部署模式与 JWT）
 docs/naming.md / daemon.md / workflow-optimized.md
-master/                           ← 主节点（Rust，含 static/ 面板前端）
+master/                           ← 主节点（Rust，含 static/ 面板前端 + team 工作团队）
 nodes/{rust,python,nodejs}/       ← 子节点三实现
+scripts/                          ← starfruit-keepalive.sh（保活）/ starfruit-wake-bridge.sh（hooks 唤醒桥）/ 团队示例
 reference/                        ← legacy ws-hub v0.2.0 等历史归档
 ```

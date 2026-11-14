@@ -1,0 +1,8 @@
+{
+  "team": "my-team",
+  "members": [
+    { "name": "worker-a", "role": "backend",  "note": "Rust 后端 / 数据" },
+    { "name": "worker-b", "role": "frontend", "note": "Web UI / 面板" },
+    { "name": "worker-c", "role": "reviewer", "note": "代码审查 / 测试" }
+  ]
+}

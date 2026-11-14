@@ -4,6 +4,30 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-15
+### 新增
+- **后台运行 + 保活**：明确要求所有节点（含主节点）**以脱离 agent 会话的方式后台运行**并**自建保活**；
+  新增 `scripts/starfruit-keepalive.sh`（watchdog：异常退出按 2s→30s 指数退避重启，正常退出不重启）。
+- **hooks 被动唤醒桥**：新增 `scripts/starfruit-wake-bridge.sh`——复用 agent 的 hooks 技术，
+  `tail -F <data-dir>/wake.log` 被动接收主节点任务，经 `STARFRUIT_WAKE_CMD` 唤醒当前会话继续工作
+  （`python3` + `shlex.quote` 安全注入 `SF_FROM/SF_TO/SF_TEXT/SF_TS`，零第三方依赖）。
+- **工作团队（team）**：主节点 `--team <team.json>` 为每位成员生成「加入团队」完整提示词；
+  `--init-team <path>` 写出配置模板。提示词经三处「代码区」交付：会话输出（`text` 代码块）、
+  落盘 `<data-dir>/team-prompts.md`、面板 `/team` 页面（`<pre><code>` + 一键复制）。
+- 主节点未配置团队时，启动后**提醒用户是否需要配置工作团队**。
+- 只读面板新增端点：`GET /team`（页面）、`GET /api/team`（JSON）、`GET /team-prompts.md`（Markdown）。
+- `master/src/team.rs`：团队定义解析（team/members）与提示词生成（含 4 个单测）。
+- `scripts/starfruit-team.example.json`：团队配置示例（与 `--init-team` 模板一致）。
+### 变更
+- 主节点启动流程重排：先绑定 hub（拿到真实地址）→ 加载团队 → 绑定面板 → 打印 banner →
+  输出/落盘团队提示词（或给出未配置提醒）。
+- 文档同步：`SKILL.md`、`README.md`、`README.en.md`、`docs/daemon.md`、`docs/protocol.md`
+  补「后台运行+保活」「hooks 被动唤醒桥」「工作团队」三项能力。
+### 测试
+- `tests/e2e.sh` 新增第 12 段（14 条断言：`--init-team`/`--team`/`/api/team`/`/team`/
+  `/team-prompts.md`/未配置提醒，以及保活与唤醒桥脚本行为），共 **56 条**全通过；
+  `master` 单测 14 条全通过（含 4 个 team 单测）。
+
 ## [0.8.0] - 2026-11-12
 ### 新增
 - 透明 **logo 图标集**：`docs/assets/icon.svg`（矢量源）与 `icon512/256/128/64/32.png`、

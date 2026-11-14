@@ -153,6 +153,8 @@ v2 注册帧新增 `mode` 字段，与服务端实际模式不一致时，回执
 | 哨兵文件 | 默认开启 | 追加一行 JSONL 到 `<data-dir>/wake.log`，agent 可 tail 该文件 |
 
 > 钩子内容由 agent 自行对接（例如调用某个 CLI 唤醒会话）；节点本身不绑定任何 agent 实现。
+> 可复用 agent 的 hooks 技术被动唤醒：`scripts/starfruit-wake-bridge.sh` `tail -F <data-dir>/wake.log`，
+> 每读到一行唤醒事件即调用 `STARFRUIT_WAKE_CMD`（注入 `SF_FROM/SF_TO/SF_TEXT/SF_TS`）。
 
 ## 7. Web 只读面板（主节点独有）
 
@@ -167,15 +169,25 @@ v2 注册帧新增 `mode` 字段，与服务端实际模式不一致时，回执
 | `GET /api/messages?limit=&before=` | 消息历史（FIFO 环形缓冲 + 可选落盘 JSONL） |
 | `GET /api/stats` | 汇总统计（消息总数、在线数、运行时长、模式） |
 | `GET /events` | SSE 实时事件流（message / node_join / node_leave） |
+| `GET /team` | 工作团队页面：每位成员「加入团队」提示词（`<pre><code>` + 一键复制）；未配置团队时 404 |
+| `GET /api/team` | 工作团队 JSON（team / server / mode / token_required / members[含 prompt]）；未配置返回 `{"team":null}` |
+| `GET /team-prompts.md` | 工作团队提示词 Markdown（落盘文件同源）；未配置时 404 |
 
-## 8. 后台运行（脱离 agent 会话）
+## 8. 后台运行与保活（脱离 agent 会话）
 
 - 所有节点支持 `--daemon`：脱离终端后台运行，写 pidfile 与日志文件；
-- 提供 systemd unit 示例与 nohup 方式；进程生命周期不依赖任何 agent 会话；
-- agent 唤醒对接见 §6（wake 钩子）。
+- **必须自行建立保活机制**：`scripts/starfruit-keepalive.sh`（watchdog，异常退出 2s→30s 退避重启）、
+  systemd `Restart=always`、或 nohup + 自建守护；
+- 进程生命周期不依赖任何 agent 会话；agent 唤醒对接见 §6（wake 钩子 / wake-bridge）。
+- 工作团队：主节点 `--team <team.json>` 生成每位成员「加入团队」提示词（会话输出 + 落盘
+  `team-prompts.md` + 面板 `/team`）；`--init-team <path>` 写出配置模板。
 
 ## 9. 版本记录
 
+- **v0.9.0（2026-11-15）**：节点（含主节点）强调**脱离 agent 会话后台运行 + 自建保活**
+  （`scripts/starfruit-keepalive.sh` 或 systemd）；新增 **hooks 被动唤醒桥**
+  `scripts/starfruit-wake-bridge.sh`（`tail -F wake.log` → 唤醒会话）；新增**工作团队**
+  `--team` / `--init-team` 与只读端点 `/team`、`/api/team`、`/team-prompts.md`。
 - **v0.7.0（2026-11-12）**：新增 `--deploy local|lan|public` 三种部署模式与校验（端口 ≥ 10001、
   占用自动 +1、禁止 `0.0.0.0`，公网强制 `tls` + JWT）；默认端口改为 `10001` / `10002`；
   新增 JWT 令牌校验（`--issue-token` 签发 / `--token` 携带，HS256、`iss/sub/iat/exp`，

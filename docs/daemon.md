@@ -1,7 +1,9 @@
 # 后台运行与唤醒钩子（daemon & wake）
 
-> starfruit 所有节点（主节点 + 三语言子节点）都是**完全脱离 agent 会话的后台进程**；
-> "唤醒对话"通过 wake 钩子留给 agent 自行对接。对应 SKILL 需求第 6 条。
+> starfruit 所有节点（主节点 + 三语言子节点）都是**完全脱离 agent 会话的后台进程**，
+> 并应**自行建立保活机制**（watchdog / systemd）；"唤醒对话"通过 wake 钩子留给 agent 自行对接，
+> 可用 `scripts/starfruit-wake-bridge.sh` **复用 agent 的 hooks 技术被动唤醒会话**。
+> 多执行者分工时，主节点可用 `--team` 生成工作团队各成员的「加入团队」提示词。
 
 ## 1. 后台运行方式
 
@@ -58,6 +60,25 @@ WantedBy=multi-user.target
 子节点同理替换 `ExecStart`（如 `starfruit-node --name worker-a --mode plain ...`）。
 `systemctl enable --now starfruit-master` 开机自启。
 
+### 1.4 保活（watchdog，推荐）
+
+> ⚠️ **agent 须知**：节点**必须以脱离 agent 会话的方式后台运行**，并**自行建立保活机制**；
+> 会话结束或 agent 退出都不得导致节点退出。
+
+除 systemd（`Restart=always`）外，仓库自带保活脚本 `scripts/starfruit-keepalive.sh`：
+它以 `"$@"` 运行节点命令，**异常退出按 2s→30s 指数退避自动重启**，正常退出（exit 0）则结束。
+
+```bash
+# 用法: scripts/starfruit-keepalive.sh <节点可执行/脚本> [节点参数...]
+# 建议先以 nohup 把 watchdog 本身放到后台（脱离会话）：
+nohup scripts/starfruit-keepalive.sh \
+  ./nodes/rust/target/release/starfruit-node --name worker-a --mode plain \
+  --server ws://127.0.0.1:10001 --data-dir ./starfruit-data \
+  >> starfruit-data/worker-a.watchdog.log 2>&1 &
+```
+
+保活方式三选一：① 本脚本；② systemd `Restart=always` + `RestartSec`；③ nohup + 自行守护。
+
 ## 2. 唤醒钩子（agent 对接口子）
 
 节点收到 `type=wake` 消息时触发以下钩子（可叠加，全部可选）：
@@ -78,13 +99,39 @@ WantedBy=multi-user.target
 
 子节点同构：`<data-dir>/<名字>.inbox.jsonl` / `<名字>.outbox.jsonl`。
 
+### 2.1 hooks 被动唤醒（`scripts/starfruit-wake-bridge.sh`）
+
+**复用 agent 的 hooks 技术被动接收主节点任务、唤醒当前 agent 继续工作**：把唤醒桥注册为
+agent 的常驻 hook，它 `tail -F <data-dir>/wake.log`（哨兵文件钩子），每读到一行唤醒事件即调用
+`STARFRUIT_WAKE_CMD`，并注入 `SF_FROM/SF_TO/SF_TEXT/SF_TS`（语义与 `--wake-cmd` 一致）。
+
+```bash
+STARFRUIT_WAKE_CMD='<你的 agent 唤醒命令，如拉起/恢复会话的 CLI>' \
+  scripts/starfruit-wake-bridge.sh starfruit-data/worker-a/wake.log
+```
+
+- 零第三方依赖：用 `python3` 解析 JSONL 并经 `shlex.quote` 安全引用字段后再交给 `sh -c`；
+- `-n0` 只看新追加行、`-F` 文件被重建也继续跟随；`STARFRUIT_WAKE_CMD` 未设置时仅打印唤醒事件。
+
 ## 3. agent 对接建议
 
 1. **唤醒入口**：把 `--wake-cmd` 指向唤醒脚本（例如写入 agent 的收件箱 / 调用拉起会话的 CLI），
-   或 `tail -f <data-dir>/wake.log` 作为守望者；
+   或注册 `scripts/starfruit-wake-bridge.sh` 常驻 hook（`tail -F wake.log`，见 §2.1）；
 2. **发消息**：向 `outbox.jsonl` 追加一行 JSON（`echo '{"to":"worker-a","type":"task","text":"..."}' >> outbox.jsonl`）；
 3. **收消息**：tail `inbox.jsonl`；
 4. 进程生命周期与 agent 会话无关——agent 重启/离线不影响节点在线与离线队列语义。
+
+## 3.1 工作团队提示词（可选）
+
+多执行者分工时，主节点可加载团队定义并为每位成员生成"加入团队"提示词（见 SKILL.md「工作团队」）：
+
+```bash
+./master/target/release/starfruit-master --init-team team.json     # ① 生成模板
+./master/target/release/starfruit-master --team team.json --daemon # ② 加载并启动
+```
+
+生成结果三处「代码区」：**会话输出**（`text` 代码块）、**`<data-dir>/team-prompts.md`**（落盘）、
+**面板 `/team`**（`<pre><code>` + 一键复制）。未配置团队时，启动后会提醒是否配置。
 
 ## 4. 运行拓扑速记
 

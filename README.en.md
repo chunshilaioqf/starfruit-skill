@@ -14,8 +14,9 @@ a read-only web dashboard (animated message flow), an offline queue, message his
 
 - **Runs as installed**: Rust components are built locally with `cargo build` (no prebuilt binaries);
   the Python / Node.js workers are **dependency-free**;
-- **Runs in the background**: every node is a daemon detached from any agent session; wake hooks are
-  left for the agent to wire up;
+- **Runs in the background**: every node is a daemon detached from any agent session, expected to set up
+  its **own keep-alive**, and can **reuse the agent's hooks to be woken up** by tasks from the master;
+- **Work teams**: the master can generate a ready-to-copy "join the team" prompt for every member;
 - **Open source**: licensed under [MIT](LICENSE); contributions are welcome (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 > This is the English translation of [README.md](README.md). If the two disagree, the Chinese
@@ -38,7 +39,8 @@ a read-only web dashboard (animated message flow), an offline queue, message his
   - [JWT token verification](#jwt-token-verification)
   - [Three deployment scenarios](#three-deployment-scenarios)
   - [Wake hooks](#wake-hooks-agent-integration-point)
-  - [Running as a daemon](#running-as-a-daemon)
+  - [Running as a daemon & keep-alive](#running-as-a-daemon--keep-alive)
+  - [Work teams (team)](#work-teams-team)
   - [Read-only web dashboard](#read-only-web-dashboard)
 - [Protocol summary](#protocol-summary)
 - [Repository layout](#repository-layout)
@@ -59,7 +61,9 @@ a read-only web dashboard (animated message flow), an offline queue, message his
 | **Message history** | In-memory ring buffer (5000 entries by default) plus an unbounded JSONL file; the dashboard pages through it |
 | **Read-only dashboard** | Node topology, animated message flow, history and stats; **no auth, read-only**, exposes no write operations |
 | **Wake hooks** | On `type=wake` a node runs a command / HTTP callback / sentinel file write, so an agent can be woken |
-| **Daemon mode** | `--daemon` detaches from the terminal and writes a pidfile plus logs; systemd / nohup also documented |
+| **Hooks-driven passive wake** | Reuse the agent's hook mechanism: `scripts/starfruit-wake-bridge.sh` tails `wake.log` and wakes the session to continue working on a master task |
+| **Daemon mode + keep-alive** | `--daemon` detaches from the terminal and writes a pidfile plus logs; `scripts/starfruit-keepalive.sh` (or systemd) restarts the process after an abnormal exit |
+| **Work teams (team)** | With `--team team.json` the master generates a full "join the team" prompt per member: copy from the session, from `team-prompts.md`, or one-click from the `/team` dashboard page |
 | **No extra dependencies** | Workers use only their standard library (hand-rolled RFC6455); the hub embeds its static assets into the binary |
 | **Deploy modes** | `--deploy local\|lan\|public`: `local` binds loopback only (safest), `lan` binds a specific LAN IP, `public` requires a concrete IP plus `--mode tls` and JWT; wildcard `0.0.0.0` is always rejected |
 | **JWT tokens** | Master-issued HS256 tokens; workers must present `--token <token>`; the master verifies signature / expiry / owner and replies `unauthorized` then disconnects on failure |
@@ -256,6 +260,8 @@ open http://127.0.0.1:10002     # https:// under tls mode; the browser must trus
 | `--jwt-ttl <secs>` | `86400` | JWT token lifetime in seconds |
 | `--require-jwt` | off | Force JWT verification in `local` / `lan` mode (`public` mode is always on) |
 | `--issue-token <node>` | none | Issue a JWT token for the named node, print it and exit (does not start the service) |
+| `--team <team.json>` | none | Load a work-team definition and generate a full "join the team" prompt for every member (session + `data-dir/team-prompts.md` + dashboard `/team`) |
+| `--init-team <path>` | none | Write a work-team template to `<path>` and exit (edit it, then load it with `--team`) |
 | `--data-dir <dir>` | `./starfruit-data` | Runtime data directory (logs / pid / history / wake) |
 | `--manager-name <name>` | `manager` | Registration name of the built-in manager endpoint |
 | `--wake-cmd <shell>` | none | Wake hook: run a command (`SF_FROM/SF_TO/SF_TEXT/SF_TS` injected) |
@@ -384,10 +390,22 @@ When a node receives a `type=wake` message, it triggers one of the configured ho
 | HTTP | `--wake-url <url>` | `POST` JSON `{"from","to","text","ts"}` |
 | Sentinel file | on by default | Appends one JSONL line to `<data-dir>/wake.log`; an agent can `tail -f` it to wake a session |
 
-**Recommended integration**: point `--wake-cmd` at your own wake entrypoint (the CLI / script that
-starts a session), or watch `wake.log`. The node itself is not tied to any specific agent.
+**Recommended integration (reuse the agent's hooks to wake the session)**: point `--wake-cmd` at your own
+wake entrypoint (the CLI / script that starts a session), or register `scripts/starfruit-wake-bridge.sh`
+as a resident agent hook — it tails `<data-dir>/wake.log` and, for each event, runs `STARFRUIT_WAKE_CMD`
+(with `SF_FROM/SF_TO/SF_TEXT/SF_TS` injected):
 
-### Running as a daemon
+```bash
+STARFRUIT_WAKE_CMD='<your agent wake command>' \
+  scripts/starfruit-wake-bridge.sh starfruit-data/worker-a/wake.log
+```
+
+The node itself is not tied to any specific agent.
+
+### Running as a daemon & keep-alive
+
+> ⚠️ **Note for agents**: every node **must run detached from the agent session** (`--daemon` / `nohup` /
+> systemd) and **set up its own keep-alive**; ending the session or exiting the agent must not stop a node.
 
 ```bash
 # Master in the background (writes data-dir/starfruit-master.pid and starfruit-master.log)
@@ -395,17 +413,48 @@ starts a session), or watch `wake.log`. The node itself is not tied to any speci
 
 # Worker in the background (writes data-dir/<name>.pid and <name>.log)
 python3 nodes/python/starfruit_node.py --name worker-b --mode plain --daemon
+
+# Keep-alive watchdog: restarts the node (2s→30s back-off) after an abnormal exit
+nohup scripts/starfruit-keepalive.sh \
+  ./nodes/rust/target/release/starfruit-node --name worker-a --mode plain \
+  --server ws://127.0.0.1:10001 --data-dir ./starfruit-data >/dev/null 2>&1 &
 ```
 
-Processes are independent of any agent session; systemd unit examples and the nohup approach are in
-[docs/daemon.md](docs/daemon.md) (Chinese).
+Choose one keep-alive approach: ① `scripts/starfruit-keepalive.sh`; ② systemd `Restart=always`
+(+ `RestartSec`); ③ nohup plus your own supervisor. Processes are independent of any agent session;
+full details are in [docs/daemon.md](docs/daemon.md) (Chinese).
+
+### Work teams (team)
+
+For multi-executor work the master can load a team definition and emit, for **each member**, a complete
+"join the team" prompt (it already covers the four steps: daemon, keep-alive, hooks-driven wake, ready
+report), ready to hand to the corresponding agent.
+
+```bash
+# ① Write a template (team name + members: name/role/note), then exit
+./master/target/release/starfruit-master --init-team team.json
+# ② Edit it, then start the master with --team (other options as usual)
+./master/target/release/starfruit-master --deploy local --mode plain --team team.json --daemon
+```
+
+If no team is configured, the master **reminds you at startup whether to set one up**. Once configured,
+the prompts appear in three copyable "code areas":
+
+| Where | Description |
+|---|---|
+| **Session output** | One block per member, wrapped in a ```text fence, ready to copy |
+| **`<data-dir>/team-prompts.md`** | Written to disk; one section per member (with a ```text fence) |
+| **Dashboard `/team`** | A `<pre><code>` block plus a "copy prompt" button (`navigator.clipboard`) |
+
+Read-only endpoints: `GET /team`, `GET /api/team`, `GET /team-prompts.md`.
 
 ### Read-only web dashboard
 
 - URL: `http://127.0.0.1:10002` (`https://` in `tls` mode);
 - **No auth, read-only**: node topology (canvas particle animation), message flow, history
   (paging / filtering) and stats;
-- Main endpoints: `GET /`, `GET /api/nodes`, `GET /api/messages?limit=&before=`, `GET /events` (SSE).
+- Main endpoints: `GET /`, `GET /api/nodes`, `GET /api/messages?limit=&before=`, `GET /events` (SSE),
+  plus the work-team endpoints `GET /team`, `GET /api/team`, `GET /team-prompts.md`.
 
 ---
 
@@ -438,6 +487,7 @@ starfruit/
 │   ├── rust/        # Rust worker (cargo build)
 │   ├── python/      # Python worker (dependency-free)
 │   └── nodejs/      # Node.js worker (dependency-free, Node >= 18)
+├── scripts/         # keep-alive watchdog, wake bridge (hooks), team example
 ├── tests/           # end-to-end script (tests/e2e.sh) and dual-mode check
 └── reference/       # archived history (legacy ws-hub v0.2.0, original protocol/notes)
 ```

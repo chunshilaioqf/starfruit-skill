@@ -32,7 +32,8 @@
   - [JWT 令牌校验](#jwt-令牌校验)
   - [三种部署场景示例](#三种部署场景示例)
   - [唤醒钩子](#唤醒钩子agent-对接口子)
-  - [后台运行](#后台运行脱离会话)
+  - [后台运行与保活](#后台运行与保活脱离会话)
+  - [工作团队（team）](#工作团队team)
   - [Web 只读面板](#web-只读面板)
 - [协议摘要](#协议摘要)
 - [目录结构](#目录结构)
@@ -55,7 +56,9 @@
 | **消息历史** | 内存环形缓冲（默认 5000 条）+ JSONL 落盘（不限量），面板可分页回看 |
 | **只读 Web 面板** | 节点拓扑 + 消息流动画 + 历史与统计；**无鉴权、全只读**，不提供任何写操作 |
 | **wake 唤醒钩子** | 收到 `type=wake` 时触发：执行命令 / HTTP 回调 / 写哨兵文件，供 agent 对接 |
-| **后台守护** | `--daemon` 脱离终端，写 pidfile 与日志；亦提供 systemd / nohup 方式 |
+| **hooks 被动唤醒** | 复用 agent 的 hooks 机制被动接收主节点任务：`scripts/starfruit-wake-bridge.sh` 监听 `wake.log` 并唤醒会话继续工作 |
+| **后台守护 + 保活** | `--daemon` 脱离终端，写 pidfile 与日志；`scripts/starfruit-keepalive.sh`（或 systemd）异常退出自动重启 |
+| **工作团队 team** | 主节点按 `--team team.json` 为每位成员生成「加入团队」完整提示词；终端可复制 + 落盘 `team-prompts.md` + 面板 `/team` 一键复制 |
 | **零外部依赖** | 子节点仅用各语言标准库（裸实现 RFC6455）；主节点静态资源内嵌于二进制 |
 
 ---
@@ -242,6 +245,8 @@ open http://127.0.0.1:10002     # tls 模式为 https://，自签证书需浏览
 | `--jwt-ttl <secs>` | `86400` | 签发令牌默认有效期（秒） |
 | `--require-jwt` | 关 | 强制所有子节点携带 JWT（`local` / `lan` 下可手动开启；`public` 强制开启） |
 | `--issue-token <节点名>` | — | 签发指定节点名的 JWT 令牌后打印并退出（不启动服务） |
+| `--team <team.json>` | 无 | 加载工作团队定义，为每位成员生成「加入团队」提示词（终端 + `team-prompts.md` + 面板 `/team`） |
+| `--init-team <path>` | — | 写出工作团队配置模板到 `<path>` 并退出（用户填写后用 `--team` 加载） |
 | `--wake-cmd <shell>` | 无 | wake 唤醒钩子：执行命令（注入 `SF_FROM/SF_TO/SF_TEXT/SF_TS`） |
 | `--wake-url <url>` | 无 | wake 唤醒钩子：HTTP POST JSON |
 | `--history-cap <n>` | `5000` | 面板内存历史条数（JSONL 落盘不限量） |
@@ -377,10 +382,22 @@ python3 nodes/python/starfruit_node.py --name worker-b --mode tls \
 | HTTP | `--wake-url <url>` | `POST` JSON `{"from","to","text","ts"}` |
 | 哨兵文件 | 默认开启 | 追加一行 JSONL 到 `<data-dir>/wake.log`，agent 可 `tail -f` 唤醒会话 |
 
-**推荐对接方式**：把 `--wake-cmd` 指向自己的唤醒入口（拉起会话的 CLI / 脚本），
-或监控 `wake.log`。节点本身不绑定任何具体 agent 实现。
+**复用 agent 的 hooks 机制被动唤醒（推荐）**：把 `scripts/starfruit-wake-bridge.sh` 注册为 agent 的
+「会话启动钩子 / 常驻后台钩子」，它 `tail -F <data-dir>/wake.log`，每读到一条主节点任务即调用
+`STARFRUIT_WAKE_CMD`（你的唤醒入口，如拉起会话的 CLI/脚本），并把消息注入
+`SF_FROM/SF_TO/SF_TEXT/SF_TS`：
 
-### 后台运行（脱离会话）
+```bash
+STARFRUIT_WAKE_CMD='<你的 agent 唤醒命令>' \
+  scripts/starfruit-wake-bridge.sh ./starfruit-data/wake.log
+```
+
+也可直接把 `--wake-cmd` 指向自己的唤醒入口；节点本身不绑定任何具体 agent 实现。
+
+### 后台运行与保活（脱离会话）
+
+> ⚠️ **agent 须知**：所有节点都**必须以脱离本 agent 会话的方式后台运行**（进程生命周期不得依赖会话），
+> 并**自行建立保活机制**，避免会话结束或异常导致节点掉线。
 
 ```bash
 # 主节点后台运行（写 data-dir/starfruit-master.pid 与 starfruit-master.log）
@@ -390,13 +407,52 @@ python3 nodes/python/starfruit_node.py --name worker-b --mode tls \
 python3 nodes/python/starfruit_node.py --name worker-b --mode plain --daemon
 ```
 
-进程与任何 agent 会话生命周期无关；systemd unit 示例与 nohup 方式见 [docs/daemon.md](docs/daemon.md)。
+保活的三种方式（任选其一）：
+
+1. **内置 `--daemon`**：脱离终端（`setsid`），stdio 重定向到 `<data-dir>/<名字>.log`；
+2. **保活脚本**（异常退出按 2s→30s 指数退避自动重启）：
+
+   ```bash
+   scripts/starfruit-keepalive.sh python3 nodes/python/starfruit_node.py \
+     --name worker-b --mode plain --server ws://127.0.0.1:10001 --data-dir ./starfruit-data
+   ```
+
+3. **systemd**（`Restart=always` + `RestartSec`）或 nohup；unit 示例与细节见 [docs/daemon.md](docs/daemon.md)。
+
+### 工作团队（team）
+
+主节点启动后会在会话中**提醒是否需要配置工作团队**。配置后，主节点会为团队**每位成员**生成一段
+**完整的「加入团队」提示词**（包含后台启动、保活、hooks 被动唤醒、就绪上报四步），便于直接复制给各 agent。
+
+```bash
+# 1) 生成团队配置模板（写出后退出）
+./master/target/release/starfruit-master --init-team team.json
+
+# 2) 编辑 team.json 填写成员（name / role / note）
+#    { "team": "my-team",
+#      "members": [ { "name": "worker-a", "role": "backend", "note": "Rust 后端" } ] }
+
+# 3) 以团队启动主节点：启动说明后会打印每位成员的「加入团队」提示词
+./master/target/release/starfruit-master --team team.json --daemon
+```
+
+提示词有三处可复制/查看（“代码区”）：
+
+| 位置 | 说明 |
+|---|---|
+| **会话输出** | 启动后按成员逐个打印，```` ```text ```` 代码块包裹，直接复制 |
+| **`<data-dir>/team-prompts.md`** | 落盘 Markdown，每位成员一段 ```` ```text ```` 代码块 |
+| **面板 `/team`** | 只读页面，每段提示词为 `<pre><code>` 代码区并提供「复制提示词」按钮 |
+
+配套接口：`GET /api/team`（JSON，含各成员提示词）、`GET /team-prompts.md`（Markdown 原文）。
+模板亦可参考 `scripts/starfruit-team.example.json`。
 
 ### Web 只读面板
 
 - 地址：`http://127.0.0.1:10002`（`tls` 模式下为 `https://`）；
 - **无鉴权、全只读**：节点拓扑（canvas 粒子动画）、消息流转、消息历史（分页/筛选）、统计；
-- 主要端点：`GET /`、`GET /api/nodes`、`GET /api/messages?limit=&before=`、`GET /events`（SSE）。
+- 主要端点：`GET /`、`GET /api/nodes`、`GET /api/messages?limit=&before=`、`GET /events`（SSE）；
+- 工作团队（配置 `--team` 后）：`GET /team`（提示词代码区 + 复制按钮）、`GET /api/team`、`GET /team-prompts.md`。
 
 ---
 

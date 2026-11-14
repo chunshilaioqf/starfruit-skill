@@ -9,6 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::protocol::{now_ms, sniff, Mode, Sniff, State};
+use crate::team::TeamView;
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const STYLE_CSS: &str = include_str!("../static/style.css");
@@ -29,6 +30,7 @@ pub async fn serve(
     addr: String,
     mode: Mode,
     tls: Option<tokio_rustls::TlsAcceptor>,
+    team: Option<Arc<TeamView>>,
 ) {
     eprintln!(
         "[web] 只读面板监听 {}://{}",
@@ -40,8 +42,9 @@ pub async fn serve(
             Ok((stream, _)) => {
                 let state = state.clone();
                 let tls = tls.clone();
+                let team = team.clone();
                 tokio::spawn(async move {
-                    let _ = handle(stream, state, mode, tls).await;
+                    let _ = handle(stream, state, mode, tls, team).await;
                 });
             }
             Err(e) => eprintln!("[web] accept 失败: {e}"),
@@ -54,6 +57,7 @@ async fn handle(
     state: Arc<State>,
     mode: Mode,
     tls: Option<tokio_rustls::TlsAcceptor>,
+    team: Option<Arc<TeamView>>,
 ) -> std::io::Result<()> {
     // 嗅探：加密方式不对 → 明文报错（与 hub 同语义）。
     let mut head = [0u8; 1];
@@ -73,13 +77,17 @@ async fn handle(
             let stream = acc.accept(raw).await.map_err(|e| {
                 std::io::Error::other(format!("TLS 握手失败: {e}"))
             })?;
-            handle_http(stream, state).await
+            handle_http(stream, state, team).await
         }
-        _ => handle_http(raw, state).await,
+        _ => handle_http(raw, state, team).await,
     }
 }
 
-async fn handle_http<S>(mut stream: S, state: Arc<State>) -> std::io::Result<()>
+async fn handle_http<S>(
+    mut stream: S,
+    state: Arc<State>,
+    team: Option<Arc<TeamView>>,
+) -> std::io::Result<()>
 where
     S: AsyncReadExt + AsyncWriteExt + Unpin,
 {
@@ -149,6 +157,34 @@ where
         "/static/img/apple-touch-icon.png" => {
             write_resp(&mut stream, 200, "image/png", APPLE_TOUCH_ICON).await
         }
+        // 工作团队：加入提示词（代码区展示 + 一键复制），仅在配置了 --team 时可用。
+        "/team" => match &team {
+            Some(t) => {
+                write_resp(&mut stream, 200, "text/html; charset=utf-8", t.html.as_bytes()).await
+            }
+            None => {
+                write_resp(
+                    &mut stream,
+                    404,
+                    "text/plain; charset=utf-8",
+                    "未配置工作团队（主节点以 --team <team.json> 启动后可用）".as_bytes(),
+                )
+                .await
+            }
+        },
+        "/team-prompts.md" => match &team {
+            Some(t) => {
+                write_resp(&mut stream, 200, "text/markdown; charset=utf-8", t.markdown.as_bytes())
+                    .await
+            }
+            None => {
+                write_resp(&mut stream, 404, "text/plain; charset=utf-8", b"no team").await
+            }
+        },
+        "/api/team" => match &team {
+            Some(t) => write_json(&mut stream, &t.json).await,
+            None => write_json(&mut stream, &serde_json::json!({ "team": null })).await,
+        },
         "/api/nodes" => {
             let body = nodes_json(&state).await;
             write_json(&mut stream, &body).await
