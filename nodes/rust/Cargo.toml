@@ -1,6 +1,6 @@
 [package]
 name = "starfruit-node"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 description = "starfruit 子节点（Rust 版）：连接主节点、注册、收发消息、wake 唤醒钩子、后台运行"
 

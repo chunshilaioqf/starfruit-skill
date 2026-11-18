@@ -59,6 +59,14 @@
 | **hooks 被动唤醒** | 复用 agent 的 hooks 机制被动接收主节点任务：`scripts/starfruit-wake-bridge.sh` 监听 `wake.log` 并唤醒会话继续工作 |
 | **后台守护 + 保活** | `--daemon` 脱离终端，写 pidfile 与日志；`scripts/starfruit-keepalive.sh`（或 systemd）异常退出自动重启 |
 | **工作团队 team** | 主节点按 `--team team.json` 为每位成员生成「加入团队」完整提示词；终端可复制 + 落盘 `team-prompts.md` + 面板 `/team` 一键复制 |
+| **用户级数据目录** | 跨 OS 统一 `~/.starfruit`（主节点 `master/`、子节点 `nodes/<name>/`），`--data-dir` 可覆盖 |
+| **首启向导 + 节点文档** | 首启交互选择部署/加密/JWT 有效期/团队；生成并动态更新 `starfruit-nodes.md`（地址/成员/令牌/连接提示词），自动加入 `.gitignore` |
+| **名称全网唯一** | 创建与登录双重校验；在线重名回执 `name_conflict`（客户端退出码 4，不顶替旧连接） |
+| **独立 Cloudflare Tunnel** | `scripts/starfruit-tunnel.sh` 后台独立运行；主节点重启不影响公网地址，仅显式 stop/restart 才变更 |
+| **被动唤醒自动对接** | `scripts/starfruit-wake-setup.sh` 检测 agent（Claude Code hooks）并常驻唤醒桥（幂等） |
+| **cucumber 可选集成** | `scripts/starfruit-cucumber.sh` 把节点注册进黄瓜进程管理（须用户同意；不装不影响功能） |
+| **每周更新检查** | 主节点启动 + 子节点连接比对线上 CHANGELOG；新版本会话提醒 + 面板横幅；`scripts/starfruit-update.sh` 含数据迁移检查 |
+| **双语面板** | 中/英切换（默认中文）；历史弹窗、拓扑齿轮/呼吸动画、单色/多彩、节点点击弹窗、GitHub 链接 |
 | **零外部依赖** | 子节点仅用各语言标准库（裸实现 RFC6455）；主节点静态资源内嵌于二进制 |
 
 ---
@@ -239,7 +247,7 @@ open http://127.0.0.1:10002     # tls 模式为 https://，自签证书需浏览
 | `--web-addr <addr>` | `127.0.0.1:10002` | Web 只读面板监听地址（**禁止 `0.0.0.0`**；端口须 ≥ 10001，占用则自动 +1） |
 | `--cert <path>` | 自动生成 | TLS 证书 PEM（缺省在 `--data-dir` 生成自签证书） |
 | `--key <path>` | 自动生成 | TLS 私钥 PEM（与 `--cert` 成对提供） |
-| `--data-dir <dir>` | `./starfruit-data` | 运行数据目录（日志 / pid / 历史 / wake / jwt-secret） |
+| `--data-dir <dir>` | `~/.starfruit/master` | 运行数据目录（日志 / pid / 历史 / wake / jwt-secret / setup.json / tokens.json） |
 | `--manager-name <name>` | `manager` | 内置管理者端点的注册名 |
 | `--jwt-secret <secret>` | 自动生成 | JWT 签名密钥；缺省自动生成 `<data-dir>/jwt-secret`（32 字节随机 hex，权限 0600） |
 | `--jwt-ttl <secs>` | `86400` | 签发令牌默认有效期（秒） |
@@ -247,6 +255,9 @@ open http://127.0.0.1:10002     # tls 模式为 https://，自签证书需浏览
 | `--issue-token <节点名>` | — | 签发指定节点名的 JWT 令牌后打印并退出（不启动服务） |
 | `--team <team.json>` | 无 | 加载工作团队定义，为每位成员生成「加入团队」提示词（终端 + `team-prompts.md` + 面板 `/team`） |
 | `--init-team <path>` | — | 写出工作团队配置模板到 `<path>` 并退出（用户填写后用 `--team` 加载） |
+| `--setup` / `--no-setup` | 自动 | 首启向导（首启且 stdin 为终端时自动进入；`--setup` 强制、`--no-setup` 跳过） |
+| `--nodes-doc <path>` | 自动 | `starfruit-nodes.md` 路径（显式 > `docs/` > `doc/` > 根目录） |
+| `--tunnel-url <url>` | 读 `~/.starfruit/tunnel/url` | 显式公网 Tunnel 地址（用于 banner / 文档 / 面板展示） |
 | `--wake-cmd <shell>` | 无 | wake 唤醒钩子：执行命令（注入 `SF_FROM/SF_TO/SF_TEXT/SF_TS`） |
 | `--wake-url <url>` | 无 | wake 唤醒钩子：HTTP POST JSON |
 | `--history-cap <n>` | `5000` | 面板内存历史条数（JSONL 落盘不限量） |
@@ -261,10 +272,10 @@ open http://127.0.0.1:10002     # tls 模式为 https://，自签证书需浏览
 |---|---|---|
 | `--server <url>` | `ws://127.0.0.1:10001` | 主节点地址（`ws://` 或 `wss://`；跨机填主节点局域网 IP / Tunnel 域名） |
 | `--token <令牌>` | 无 | JWT 令牌（主节点强制 JWT 时必填，由主节点 `--issue-token` 签发；校验失败退出码 3） |
-| `--name <name>` | 必填 | 节点名，**全网唯一**（同名重连顶掉旧连接） |
+| `--name <name>` | 必填 | 节点名，**全网唯一**（在线重名回执 `name_conflict`，退出码 4，不顶替旧连接） |
 | `--role <role>` | `worker` | 角色标签（`manager` / `worker`，展示用） |
 | `--mode plain\|tls` | `plain` | **必须与主节点一致**，否则连接时会被主节点报错断开 |
-| `--data-dir <dir>` | `./starfruit-data` | 运行数据目录（日志 / pid / `wake.log`） |
+| `--data-dir <dir>` | `~/.starfruit/nodes/<name>` | 运行数据目录（日志 / pid / `wake.log`） |
 | `--wake-cmd <sh>` | 无 | wake 唤醒钩子：shell 命令（注入 `SF_FROM/SF_TO/SF_TEXT/SF_TS`） |
 | `--wake-url <url>` | 无 | wake 唤醒钩子：HTTP POST JSON `{"from","to","text","ts"}` |
 | `--ca-cert <path>` | 无 | TLS CA 证书（缺省信任自签证书，适用于 LAN） |
@@ -450,8 +461,15 @@ python3 nodes/python/starfruit_node.py --name worker-b --mode plain --daemon
 ### Web 只读面板
 
 - 地址：`http://127.0.0.1:10002`（`tls` 模式下为 `https://`）；
-- **无鉴权、全只读**：节点拓扑（canvas 粒子动画）、消息流转、消息历史（分页/筛选）、统计；
-- 主要端点：`GET /`、`GET /api/nodes`、`GET /api/messages?limit=&before=`、`GET /events`（SSE）；
+- **无鉴权、全只读**：节点拓扑（canvas 动画）、消息流转、消息历史、统计；
+- **中英双语**：默认中文，顶栏 `EN/中文` 切换（localStorage 持久化）；
+- **消息历史弹窗**：顶栏实时连接 chip 之后的按钮打开，80vw×80vh（min 640×320），分页/筛选；
+- **拓扑动画**：工作节点旋转齿轮、空闲呼吸灯、消息放大高亮 5s 缓慢回落；HUB 用 SVG logo
+  （新消息快转 5s / 新节点上线闪烁 10s / 节点离线红色剧烈跳动 10s）；节点显示收/发计数，
+  点击弹出实时流最近 5 条（无则「暂无」）；标题右端单色/多彩切换（多彩=名称哈希 HSL）；
+  节点居中旋转首字符（背景反色+75% 白+白辉光）；20% 灰网格背景；
+- **更新横幅 + GitHub 链接**：发现新版本时顶部横幅提醒；页脚含仓库链接与版本号；
+- 主要端点：`GET /`、`GET /api/nodes`、`GET /api/messages?limit=&before=`、`GET /api/stats`、`GET /events`（SSE）；
 - 工作团队（配置 `--team` 后）：`GET /team`（提示词代码区 + 复制按钮）、`GET /api/team`、`GET /team-prompts.md`。
 
 ---
@@ -463,7 +481,7 @@ python3 nodes/python/starfruit_node.py --name worker-b --mode plain --daemon
 - **帧**：JSON 文本 `{"from","to","type","text","ts"}`；`to` 支持 `"all"` 广播（发送者不收自己的广播）；
 - **类型**：`task / status / done / blocked / idle / notice / chat / wake`；
 - **注册**：首帧 `{"action":"register","from":"<name>","role":"worker|manager","mode":"plain|tls","ver":2}`；
-- **回执**：`registered / sent / queued / queued_delivered / broadcast_ok / no_such_peer / bad_msg / warn / mode_mismatch / unauthorized`；
+- **回执**：`registered / sent / queued / queued_delivered / broadcast_ok / no_such_peer / bad_msg / warn / mode_mismatch / unauthorized / name_conflict`；
 - **离线队列**：定向消息对端不在线时暂存（每对端 200 条 FIFO），注册后自动投递；广播不补发。
 
 ---

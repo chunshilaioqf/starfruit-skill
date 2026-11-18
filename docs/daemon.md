@@ -12,6 +12,10 @@
 所有节点均支持 `--daemon`：脱离终端（`setsid` / `detached`）、stdio 重定向到
 `<data-dir>/<名字>.log`、写 `<data-dir>/<名字>.pid`。
 
+> **默认数据目录**：缺省 `--data-dir` 时统一落在用户级 `~/.starfruit`（跨 OS 一致）：
+> 主节点 `~/.starfruit/master`、子节点 `~/.starfruit/nodes/<name>`。下文示例中的
+> `starfruit-data/` 仅为显式 `--data-dir` 的写法，可替换为默认路径。
+
 ```bash
 # 主节点（默认 --deploy local，仅监听 127.0.0.1）
 ./master/target/release/starfruit-master --deploy local --mode plain --daemon
@@ -107,11 +111,42 @@ agent 的常驻 hook，它 `tail -F <data-dir>/wake.log`（哨兵文件钩子）
 
 ```bash
 STARFRUIT_WAKE_CMD='<你的 agent 唤醒命令，如拉起/恢复会话的 CLI>' \
-  scripts/starfruit-wake-bridge.sh starfruit-data/worker-a/wake.log
+  scripts/starfruit-wake-bridge.sh ~/.starfruit/nodes/worker-a/wake.log
 ```
 
 - 零第三方依赖：用 `python3` 解析 JSONL 并经 `shlex.quote` 安全引用字段后再交给 `sh -c`；
 - `-n0` 只看新追加行、`-F` 文件被重建也继续跟随；`STARFRUIT_WAKE_CMD` 未设置时仅打印唤醒事件。
+
+### 2.2 自动对接（`scripts/starfruit-wake-setup.sh`，推荐）
+
+一条命令完成"检测 agent + 注册常驻 hook + 立即后台常驻唤醒桥"，**幂等可重复执行**：
+
+```bash
+scripts/starfruit-wake-setup.sh ~/.starfruit/nodes/worker-a/wake.log ['唤醒命令']
+```
+
+- 检测到 **Claude Code**（`~/.claude/`）时，幂等合并 `settings.json` 的 `hooks.SessionStart`
+  （不覆盖既有配置），会话启动即拉起唤醒桥；
+- 其它 agent：打印接入说明（把 wake-bridge 配成会话启动/常驻钩子）；
+- 唤醒命令优先级：第 2 参数 > `$STARFRUIT_WAKE_CMD` > 检测到 `claude` CLI 的默认 headless 命令；
+- 唤醒桥 pid 记录在 `wake.log` 同目录 `wake-bridge.pid`，日志 `wake-bridge.log`。
+
+### 2.3 独立 Cloudflare Tunnel（公网模式，`scripts/starfruit-tunnel.sh`）
+
+公网模式下 Tunnel **独立后台运行**，与主节点生命周期解耦：
+
+```bash
+scripts/starfruit-tunnel.sh start      # 后台启动（默认指向 127.0.0.1:10001）
+scripts/starfruit-tunnel.sh status     # 运行状态 + 公网地址
+scripts/starfruit-tunnel.sh url        # 只输出公网地址
+scripts/starfruit-tunnel.sh stop       # 显式停止（仅此命令会终止 Tunnel）
+scripts/starfruit-tunnel.sh restart    # 显式重启（公网地址会变化）
+```
+
+- 数据 `~/.starfruit/tunnel`（watchdog/cloudflared pid、日志、url 文件）；
+- **主节点重启不影响公网地址**；仅显式 stop/restart 才变更；cloudflared 崩溃由看门狗自动拉起；
+- 停止只按本脚本记录的精确 PID 操作，绝不波及其它 cloudflared 进程；
+- 主节点启动时读取 `~/.starfruit/tunnel/url`，在 banner / 节点文档 / 面板展示公网地址。
 
 ## 3. agent 对接建议
 

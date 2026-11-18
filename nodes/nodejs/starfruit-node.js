@@ -23,6 +23,16 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
+const CURRENT_VERSION = "0.10.0";
+const REPO_URL = "https://github.com/chunshilaioqf/starfruit-skill";
+const CHANGELOG_URL = "https://raw.githubusercontent.com/chunshilaioqf/starfruit-skill/main/CHANGELOG.md";
+const UPDATE_CHECK_INTERVAL_MS = 7 * 86400 * 1000;
+
+function userDataRoot() {
+  const home = process.env.HOME || process.env.USERPROFILE || ".";
+  return path.join(home, ".starfruit");
+}
+
 // ─────────────────────────── 参数解析 ───────────────────────────
 
 function parseArgs(argv) {
@@ -32,7 +42,7 @@ function parseArgs(argv) {
     role: "worker",
     mode: "plain",
     token: null,
-    dataDir: "starfruit-data",
+    dataDir: null,
     wakeCmd: null,
     wakeUrl: null,
     caCert: null,
@@ -67,11 +77,11 @@ const HELP = `starfruit 子节点（Node.js 版）
 
 选项:
   --server <url>     主节点地址 ws:// 或 wss://（默认 ws://127.0.0.1:10001）
-  --name <name>      节点名（全网唯一，必填）
+  --name <name>      节点名（全网唯一，必填；重名在线连接会被拒绝 name_conflict）
   --role <role>      角色标签（默认 worker）
   --mode plain|tls   加密模式，必须与主节点一致（默认 plain）
   --token <jwt>      JWT 令牌（主节点 --issue-token <本节点名> 签发；公网模式必填）
-  --data-dir <dir>   运行数据目录（默认 ./starfruit-data）
+  --data-dir <dir>   运行数据目录（默认 ~/.starfruit/nodes/<name>）
   --wake-cmd <sh>    wake 唤醒钩子：shell 命令（SF_FROM/SF_TO/SF_TEXT/SF_TS）
   --wake-url <url>   wake 唤醒钩子：HTTP POST JSON
   --ca-cert <path>   TLS CA 证书（缺省信任自签）
@@ -265,6 +275,59 @@ class WsClient {
   }
 }
 
+// ─────────────────────────── 每周更新检查 ───────────────────────────
+
+function parseLatestVersion(changelog) {
+  for (const line of changelog.split("\n")) {
+    const m = line.trim().match(/^## \[([^\]]+)\]/);
+    if (m && /^\d/.test(m[1])) return m[1];
+  }
+  return null;
+}
+
+function versionNewer(latest, current) {
+  const parts = (s) => s.split(".").map((p) => parseInt(p, 10) || 0);
+  const a = parts(latest), b = parts(current);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] || 0, y = b[i] || 0;
+    if (x !== y) return x > y;
+  }
+  return false;
+}
+
+function fetchChangelog() {
+  return new Promise((resolve) => {
+    const req = require("https").get(CHANGELOG_URL, { timeout: 8000 }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => { body += c; });
+      res.on("end", () => resolve(body));
+    });
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+    req.on("error", () => resolve(null));
+  });
+}
+
+async function checkUpdateWeekly(dataDir) {
+  const marker = path.join(dataDir, "update-check.json");
+  let cached = {};
+  try { cached = JSON.parse(fs.readFileSync(marker, "utf8")); } catch { /* 无缓存 */ }
+  const now = Date.now();
+  let latest = cached.latest || null;
+  if (now - (cached.ts_ms || 0) >= UPDATE_CHECK_INTERVAL_MS) {
+    const body = await fetchChangelog();
+    const v = body ? parseLatestVersion(body) : null;
+    if (v) {
+      latest = v;
+      try { fs.writeFileSync(marker, JSON.stringify({ ts_ms: now, latest })); } catch { /* 忽略 */ }
+    }
+  }
+  if (latest && versionNewer(latest, CURRENT_VERSION)) {
+    log(`发现新版本 ${latest}（当前 ${CURRENT_VERSION}）：请提醒用户更新 —— ${REPO_URL}（scripts/starfruit-update.sh，含数据迁移检查）`);
+  }
+}
+
 // ─────────────────────────── 节点本体 ───────────────────────────
 
 class Node {
@@ -338,6 +401,7 @@ class Node {
     const u = new URL(this.args.server.replace(/^ws/, "http"));
     const useTls = this.args.server.startsWith("wss");
     log(`连接 ${this.args.server}（mode=${this.args.mode}）`);
+    await checkUpdateWeekly(this.dataDir);
     this.ws = new WsClient({
       host: u.hostname,
       port: Number(u.port || (useTls ? 443 : 80)),
@@ -388,6 +452,11 @@ class Node {
         log(`JWT 令牌校验失败（服务端报错）：${v.detail}`);
         process.exit(3);
       }
+      if (v.code === "name_conflict") {
+        log(`节点名冲突（服务端报错）：${v.detail}`);
+        log("节点名称全网唯一：请更换 --name，或待同名旧连接断开后重试");
+        process.exit(4);
+      }
       log(`系统回执 ${v.code}: ${v.detail || ""}`);
       return;
     }
@@ -419,6 +488,9 @@ function main() {
   if (args.help || !args.name) {
     console.log(HELP);
     process.exit(args.help ? 0 : 1);
+  }
+  if (!args.dataDir) {
+    args.dataDir = path.join(userDataRoot(), "nodes", args.name);
   }
   if (args.daemon) {
     daemonize(path.resolve(args.dataDir), args.name);

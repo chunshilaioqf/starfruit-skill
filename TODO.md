@@ -96,3 +96,13 @@
 - 方案：新增 `team.rs`（解析 + 提示词生成 + 视图）与 `--team`/`--init-team`；重排 `run()` 先绑定 hub 再生成提示词；面板新增 `/team`、`/api/team`、`/team-prompts.md`；新增两个 shell 脚本；文档三处同步提示词与保活/唤醒用法。
 - 风险：提示词内含 `--`、`|` 等字符，e2e 断言需 `grep -q --` 规避选项解析；markdown 内 ```text 反引号在 bash 双引号下会触发命令替换（改用成员名断言规避）。
 - 备注/进度：已完成。master clippy 0 警告、14 单测通过；e2e 新增第 12 段 14 条断言，共 56 通过 / 0 失败；VERSION 0.9.0。
+
+### T-12 用户级目录 + 首启向导/节点文档 + 名称唯一 + 独立 Tunnel + 唤醒自动对接 + cucumber + 更新检查 + 面板改版
+- 状态：已完成
+- 创建：2026-11-18　完成：2026-11-18
+- 目标：①节点安装/启动后自动与当前 agent 工具被动唤醒对接；②cucumber 存在时可选注册节点进程（用户决定）；③公网 Cloudflare Tunnel 独立后台运行、主节点重启不换地址、仅显式 stop/restart 才操作；④首启交互向导（部署→团队/令牌有效期→初始化启动）并在会话告知地址/成员/令牌，生成 starfruit-nodes.md（用户路径>docs>根）加 .gitignore、含各节点连接提示词代码块；⑤节点信息变动时文档动态更新；⑥面板拓扑动画（工作齿轮/空闲呼吸/消息放大 5s 回落；HUB 用 SVG logo：新消息快转 5s/上线闪烁 10s/离线红跳 10s）+ 中英切换（默认中文）+ 历史弹窗 80vw×80vh(min640×320)；⑦拓扑节点收/发状态、点击弹最近 5 条（无则暂无）、标题右端单色/多彩切换、居中旋转首字符（反色+75%白+白辉光）、20% 灰网格；⑧节点名创建+登录双重唯一；⑨每周更新检查（节点连接+主节点启动）提醒+数据迁移检查；⑩数据统一 ~/.starfruit 跨 OS；⑪仓库默认 github.com/chunshilaioqf/starfruit-skill、更新比对线上 CHANGELOG、面板含 GitHub 链接。
+- 验收标准：①wake-setup 幂等注册 agent hook 并常驻唤醒桥；②cucumber 脚本只读 list 可用、add 须同意、不 DELETE；③tunnel 脚本 start/stop/restart/status/url 精确 PID、主节点读 url；④向导落盘 setup.json/tokens.json(0600)/starfruit-nodes.md+.gitignore、二次启动复用；⑤文档随上线/下线动态更新；⑥⑦面板真实浏览器实测中英/弹窗/配色/节点弹窗/动画/横幅；⑧name_conflict 退出码 4 不顶替；⑨update-check 节流+迁移标记；⑩默认目录 ~/.starfruit/nodes/<name>；⑪stats 含 repo_url/version、页脚 GitHub。
+- 涉及：master/src/{paths,update,setup,nodesdoc,team,hub,protocol,main,web}.rs、master/static/{index.html,app.js,style.css}、nodes/{rust/src/main.rs,python/starfruit_node.py,nodejs/starfruit-node.js}、scripts/{starfruit-tunnel,starfruit-wake-setup,starfruit-cucumber,starfruit-update}.sh、tests/e2e.sh、SKILL.md、README.md、README.en.md、docs/{protocol,naming,daemon,skill-plan}.md、CHANGELOG.md、VERSION、master/Cargo.toml、nodes/rust/Cargo.toml、.gitignore
+- 方案：新增 paths/update/setup/nodesdoc 四个 master 模块；hub 注册改拒绝在线重名；三客户端默认目录+name_conflict 退出 4+每周更新检查；四个运维脚本；面板前端重写（i18n/历史弹窗/拓扑动画/配色/节点弹窗/更新横幅）。
+- 风险：①Moli 自研浏览器 canvas2d 不完整致残影，改用真实 Chrome headless(CDP 9223) 实测；②drawNode 时间参数 t 遮蔽 i18n 函数 t 致崩溃，改名 sec；③master 与节点 update-check schema 不一致，统一 ts_ms/latest；④update-banner display:flex 覆盖 hidden，补 [hidden]{display:none}；⑤performance.now() 从 0 起致启动瞬间误判工作中，activity/flash 缺省改 -1e9。
+- 备注/进度：已完成。master clippy 0 警告、26 单测通过；Rust 子节点 2 单测通过；e2e 新增 13–16 段共 93 通过 / 0 失败；真实 Chrome 实测面板中英/历史弹窗/单色多彩/节点弹窗/更新横幅显隐/拓扑齿轮与呼吸动画均正常；开发全程避开生产（10001/10002、coder、cloudflared），测试用 195xx/197xx 端口与隔离 HOME，清理仅按精确 PID。VERSION 0.10.0。

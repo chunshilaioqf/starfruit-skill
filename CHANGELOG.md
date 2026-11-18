@@ -4,6 +4,47 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-18
+### 新增
+- **用户级数据目录**：所有操作系统统一 `~/.starfruit`（HOME/USERPROFILE）。主节点默认
+  `~/.starfruit/master`，子节点默认 `~/.starfruit/nodes/<name>`（`--data-dir` 可覆盖）。
+- **首次启动向导**：首启（无 `setup.json` 且 stdin 为终端）或 `--setup` 进入交互向导：
+  部署模式 → 加密模式 → JWT 与令牌有效期（24h/7d/30d/365d/自定义秒）→ 工作团队与成员 →
+  节点文档路径。选择持久化 `setup.json`，之后启动自动复用（`--no-setup` 跳过）。
+- **节点接入文档 `starfruit-nodes.md`**：首启生成、节点信息变动时自动更新（上线/下线/令牌/Tunnel）。
+  含主节点地址端口、面板、公网 Tunnel 地址、团队成员名/角色/在线/令牌、每成员连接提示词
+  （```text 代码块）与其它节点连接命令。路径决策：显式 > `docs/` > `doc/` > 根目录；自动加入 `.gitignore`。
+- **令牌集中管理**：`<data-dir>/tokens.json`（0600）；团队每次启动重新签发；`--issue-token` 合并写入；
+  启动横幅向用户展示成员名 + 令牌。
+- **节点名称全网唯一**：创建（团队成员去重、不得与管理者同名）与登录（在线重名拒绝）双重校验；
+  服务端回执 `name_conflict`，三语言客户端退出码 **4**（不顶替旧连接）。
+- **独立 Cloudflare Tunnel**：`scripts/starfruit-tunnel.sh start|stop|restart|status|url`，
+  数据 `~/.starfruit/tunnel`（pid/日志/url）。看门狗崩溃自动拉起；**主节点重启不影响公网地址**，
+  仅显式 stop/restart 才变更；停止只按本脚本记录的精确 PID 操作。主节点读取 `~/.starfruit/tunnel/url` 展示。
+- **被动唤醒自动对接**：`scripts/starfruit-wake-setup.sh <wake.log> [唤醒命令]` 检测本机 agent
+  （Claude Code 合并 `hooks.SessionStart`，幂等）并后台常驻唤醒桥；其它 agent 打印接入说明。
+- **cucumber 可选集成**：`scripts/starfruit-cucumber.sh list|add|start|stop`，自动读取配置
+  （macOS `~/Library/Application Support/cucumber/config.toml` / 其它 `~/.config/cucumber/config.toml`）；
+  `add` 须用户同意（`--yes`）；绝不 DELETE 进程配置；不装 cucumber 不影响任何功能。
+- **每周更新检查**：主节点启动与三语言子节点每次连接比对线上 CHANGELOG 最新版本
+  （仓库固定 `https://github.com/chunshilaioqf/starfruit-skill`），节流 7 天（`update-check.json`，
+  统一 `ts_ms/latest` schema）；发现新版本在会话提醒 + 面板横幅。`scripts/starfruit-update.sh`
+  拉取 + 重编译 + 数据迁移检查提示（不触碰运行中进程与 Tunnel）。
+- **数据迁移检查**：`<data-dir>/data-version` 标记，启动时对比版本（当前各版本 JSONL 结构兼容）。
+### 变更
+- **Web 面板全面改版**：中英双语（默认中文，顶栏切换，localStorage 持久化）；消息历史改为
+  弹窗（80vw×80vh，min 640×320，按钮位于实时连接 chip 之后）；拓扑动画升级——工作节点旋转齿轮、
+  空闲呼吸灯、消息放大高亮 5s 缓慢回落；HUB 改用 SVG logo（新消息快转 5s / 新节点上线闪烁 10s /
+  节点离线红色剧烈跳动 10s）；节点显示收/发计数、点击弹出实时流最近 5 条（无则「暂无」）；
+  标题右端单色/多彩切换（多彩=名称哈希 HSL）；节点居中旋转首字符（背景反色+75% 白+白辉光）；
+  拓扑 20% 灰网格背景；页脚 GitHub 链接 + 版本号；更新横幅。
+- 子节点默认数据目录改为 `~/.starfruit/nodes/<name>`；`--help` 与团队提示词同步更新。
+### 测试
+- `tests/e2e.sh` 新增第 13–16 段（名称唯一退出码 4、首启向导/节点文档生成与动态更新/二次启动复用、
+  用户级默认目录、tunnel/wake-setup/cucumber/update 脚本行为），共 **93 条**全通过；
+  `master` 单测 26 条、Rust 子节点单测 2 条全通过；真实 Chrome 无头浏览器实测面板
+  （中英切换/历史弹窗/单色多彩/节点弹窗/更新横幅显隐/拓扑动画）均正常。
+
 ## [0.9.0] - 2026-11-15
 ### 新增
 - **后台运行 + 保活**：明确要求所有节点（含主节点）**以脱离 agent 会话的方式后台运行**并**自建保活**；

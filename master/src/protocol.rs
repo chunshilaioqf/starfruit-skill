@@ -95,7 +95,7 @@ pub fn sniff(first_byte: u8, server_mode: Mode) -> Sniff {
     }
 }
 
-/// 在线连接注册表：名字 -> 该连接的写通道（v1.1 语义：同名重连顶掉旧连接）。
+/// 在线连接注册表：名字 -> 该连接的写通道（名称全网唯一：同名在线注册被拒绝 name_conflict）。
 pub type Peers = Arc<Mutex<std::collections::HashMap<String, mpsc::UnboundedSender<Message>>>>;
 
 /// 离线消息队列（按目标名共享，跨重连保留；v1.1 语义）。
@@ -212,6 +212,8 @@ pub struct State {
     pub events: broadcast::Sender<Value>,
     pub started_at_ms: u64,
     pub msg_total: AtomicU64,
+    /// 每周更新检查结果（update.rs 写入，面板 /api/stats 展示）。
+    pub update: Mutex<Option<Value>>,
 }
 
 impl State {
@@ -230,6 +232,7 @@ impl State {
             events,
             started_at_ms: now_ms(),
             msg_total: AtomicU64::new(0),
+            update: Mutex::new(None),
         })
     }
 

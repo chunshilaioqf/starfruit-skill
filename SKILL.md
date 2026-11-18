@@ -32,6 +32,10 @@ metadata: { "openclaw": { "emoji": "⭐" } }
 | `starfruit-node.js` | Node.js ≥18 | `nodes/nodejs/` | 子节点（仅内置模块，可直接运行） |
 | `starfruit-keepalive.sh` | Bash | `scripts/` | 保活（watchdog）：监督节点进程，异常退出按 2s→30s 退避重启 |
 | `starfruit-wake-bridge.sh` | Bash | `scripts/` | hooks 唤醒桥：`tail -F wake.log` 被动接收任务并唤醒 agent 会话 |
+| `starfruit-wake-setup.sh` | Bash | `scripts/` | 被动唤醒自动对接：检测 agent（Claude Code hooks）并常驻唤醒桥（幂等） |
+| `starfruit-tunnel.sh` | Bash | `scripts/` | 独立 Cloudflare Tunnel：start/stop/restart/status/url（主节点重启不影响公网地址） |
+| `starfruit-cucumber.sh` | Bash | `scripts/` | cucumber（黄瓜）可选集成：list/add/start/stop（add 须用户同意） |
+| `starfruit-update.sh` | Bash | `scripts/` | 更新：git pull + 重编译 + 数据迁移检查提示（不触碰运行中进程/Tunnel） |
 | `starfruit-team.example.json` | JSON | `scripts/` | 工作团队配置示例（`--init-team` 模板一致） |
 
 > ⚠️ **不提供二进制**：Rust 组件由用户安装本 SKILL 后**本地编译**（下文 Quickstart）。
@@ -73,7 +77,14 @@ cd <skill目录>/nodes/rust && cargo build --release # 产出 nodes/rust/target/
 `--hub-addr <IP:PORT>` / `--web-addr <IP:PORT>`（端口 **≥10001**，默认 hub `10001` / 面板 `10002`，
 被占用时自动 +1）、`--cert` / `--key`、`--jwt-secret <密钥>`（缺省自动生成 `data-dir/jwt-secret`，权限 0600）、
 `--jwt-ttl <秒>`（默认 86400）、`--require-jwt`、`--issue-token <节点名>`（签发后打印并退出）、
-`--team <team.json>` / `--init-team <path>`（工作团队定义/模板，见下文）、`--daemon`。
+`--team <team.json>` / `--init-team <path>`（工作团队定义/模板，见下文）、
+`--data-dir <dir>`（缺省 `~/.starfruit/master`）、`--setup` / `--no-setup`（首启向导）、
+`--nodes-doc <path>`（节点文档路径）、`--tunnel-url <url>`（显式公网地址）、`--daemon`。
+
+**首启向导**：首次启动（`data-dir` 无 `setup.json` 且 stdin 为终端）或 `--setup` 时进入交互向导：
+部署模式 → 加密模式 → JWT 与令牌有效期 → 工作团队与成员（名称唯一）→ 节点文档路径。
+选择持久化 `setup.json`，之后启动自动复用（`--no-setup` 跳过，脚本化启动用）。
+向导完成后在会话中告知：节点接入地址/端口、全部团队成员名 + 令牌，并生成 `starfruit-nodes.md`。
 
 **JWT 令牌**：令牌**只能由主节点签发**（`--issue-token <节点名>`，签发后打印并退出）；所有子节点连接时
 **必须 `--token <令牌>`** 校验；令牌缺失或校验失败时回执 `unauthorized` 并断开连接（客户端退出码 3）。
@@ -115,7 +126,8 @@ node nodes/nodejs/starfruit-node.js --name worker-c --mode plain
 要点：
 - **客户端选哪种实现由 agent 按所在机器环境决定**：有 Rust 工具链用 Rust 版；仅有 Python 用
   Python 版；仅有 Node 用 Node.js 版。三者为等价实现，协议完全相同，任选其一即可；
-- `--name` **全网唯一**（同名重连顶掉旧连接）；一台机器可启动多个节点进程；
+- `--name` **全网唯一**：在线重名会被拒绝（`name_conflict`，退出码 4，不顶替旧连接）；一台机器可启动多个节点进程；
+- `--data-dir` 缺省为 `~/.starfruit/nodes/<name>`（用户级，跨 OS 统一）；
 - `--mode` **必须与主节点一致**，否则连接时主节点会**向该节点报错**（`mode_mismatch`）；
 - `--server ws://127.0.0.1:10001` 指定主节点地址（**默认 `ws://127.0.0.1:10001`**；跨机填主节点的局域网 IP）；
 - `--token <令牌>`：主节点启用 JWT 时**必填**，缺失或校验失败回执 `unauthorized` 并断开（退出码 3）。
@@ -128,13 +140,15 @@ node nodes/nodejs/starfruit-node.js --name worker-c --mode plain
 - 哨兵文件（默认）：`<data-dir>/wake.log` 追加 JSONL，agent 可 `tail -f` 唤醒会话。
 
 **agent 对接方式（推荐，复用 agent 的 hooks 技术被动唤醒）**：
-- 直接把 `--wake-cmd` 指向自己的唤醒入口（拉起/恢复会话的 CLI 或脚本）；
-- 或将 `scripts/starfruit-wake-bridge.sh` 注册为 agent 的常驻 hook：它 `tail -F <data-dir>/wake.log`，
+- 运行 `scripts/starfruit-wake-setup.sh <data-dir>/wake.log` 自动对接当前 agent（检测 Claude Code
+  hooks 并注册常驻唤醒桥，幂等）；其余环境以 `STARFRUIT_WAKE_CMD` 后台常驻 wake-bridge；
+- 或直接把 `--wake-cmd` 指向自己的唤醒入口（拉起/恢复会话的 CLI 或脚本）；
+- 或手动将 `scripts/starfruit-wake-bridge.sh` 注册为 agent 的常驻 hook：它 `tail -F <data-dir>/wake.log`，
   每读到一行即用 `STARFRUIT_WAKE_CMD` 唤醒当前会话（并注入 `SF_FROM/SF_TO/SF_TEXT/SF_TS`）：
 
 ```bash
 STARFRUIT_WAKE_CMD='<你的 agent 唤醒命令>' \
-  scripts/starfruit-wake-bridge.sh starfruit-data/worker-a/wake.log
+  scripts/starfruit-wake-bridge.sh ~/.starfruit/nodes/worker-a/wake.log
 ```
 
 节点不绑定任何具体 agent 实现。
@@ -144,8 +158,11 @@ STARFRUIT_WAKE_CMD='<你的 agent 唤醒命令>' \
 - 帧：JSON 文本，`{"from","to","type","text","ts"}`；`to` 支持 `"all"` 广播；
 - 类型：`task / status / done / blocked / idle / notice / chat / wake`；
 - 注册：首帧 `{"action":"register","from":"<name>","role":"worker|manager","mode":"plain|tls","ver":2}`；
-- 回执：`registered / sent / queued / queued_delivered / broadcast_ok / no_such_peer / bad_msg / warn / mode_mismatch / unauthorized`；
+- 回执：`registered / sent / queued / queued_delivered / broadcast_ok / no_such_peer / bad_msg / warn / mode_mismatch / unauthorized / name_conflict`；
+- **名称唯一**：在线重名注册回执 `name_conflict` 并断开（客户端退出码 4，不顶替旧连接）；
 - 离线队列：定向消息对端不在线暂存（每对端 200 条 FIFO），注册后自动投递；广播不补发。
+- **数据目录**：默认用户级 `~/.starfruit`（主节点 `master/`、子节点 `nodes/<name>/`），跨 OS 统一；`--data-dir` 可覆盖。
+- **更新检查**：主节点启动与子节点每次连接每周比对线上 CHANGELOG（仓库 `github.com/chunshilaioqf/starfruit-skill`），发现新版本会话提醒 + 面板横幅。
 
 ## 后台运行与保活（脱离会话）
 
@@ -183,6 +200,34 @@ STARFRUIT_WAKE_CMD='<你的 agent 唤醒命令>' \
 
 配套只读接口：`GET /team`（页面）、`GET /api/team`（JSON）、`GET /team-prompts.md`（Markdown）。
 
+## 节点接入文档（starfruit-nodes.md）
+
+首启生成、节点信息变动时**自动更新**（上线/下线/令牌签发/Tunnel 地址变化）。内容：主节点地址端口、
+面板地址、公网 Tunnel 地址（如有）、团队成员名/角色/在线/令牌、每成员连接提示词（```text 代码块，
+复制发给对应子节点 agent）、其它已注册节点连接命令、运维说明。
+
+- 路径决策：`--nodes-doc` 显式 > 当前目录 `docs/` > `doc/` > 根目录 `starfruit-nodes.md`；
+- 自动加入 `.gitignore`（**含 JWT 令牌，请勿提交或外传**）；
+- 令牌集中存 `<data-dir>/tokens.json`（0600），团队每次启动重新签发。
+
+## 独立 Cloudflare Tunnel（公网模式）
+
+`scripts/starfruit-tunnel.sh start|stop|restart|status|url [端口]`，数据 `~/.starfruit/tunnel`
+（watchdog/cloudflared pid、日志、url 文件）。**与主节点生命周期解耦**：主节点重启不影响公网地址；
+仅显式 `stop`/`restart` 才变更地址；cloudflared 崩溃由看门狗自动拉起。停止只按本脚本记录的精确 PID
+操作，绝不波及其它 cloudflared 进程。主节点启动时读取 `~/.starfruit/tunnel/url` 在 banner/文档/面板展示。
+
+## 被动唤醒自动对接 / cucumber 可选集成 / 更新
+
+- **wake-setup**：`scripts/starfruit-wake-setup.sh <wake.log> [唤醒命令]` 检测本机 agent
+  （Claude Code 合并 `hooks.SessionStart`，幂等可重复执行）并后台常驻唤醒桥；其它 agent 打印接入说明。
+  唤醒命令优先级：第 2 参数 > `$STARFRUIT_WAKE_CMD` > 检测到 `claude` CLI 的默认 headless 命令。
+- **cucumber（可选）**：`scripts/starfruit-cucumber.sh list|add|start|stop`。不装 cucumber 不影响任何
+  功能；`add` 会修改 cucumber 配置，**须先征得用户同意**（交互确认或 `--yes`）；绝不 DELETE 进程配置。
+- **更新**：`scripts/starfruit-update.sh [--no-build]` = git pull + 重编译 + 数据迁移检查提示；
+  更新后重启主节点/子节点生效（保活会自动拉起），**Tunnel 无需重启**。主节点启动时自动做数据迁移检查
+  （`<data-dir>/data-version` 标记）。
+
 ## 运维须知（来自实战经验总结）
 
 - 清理测试实例**只按 PID/端口**，禁止宽模式 `pkill -f`（历史上误杀过生产 hub）；
@@ -199,6 +244,7 @@ docs/skill-plan.md                ← 方法论（含部署模式与 JWT）
 docs/naming.md / daemon.md / workflow-optimized.md
 master/                           ← 主节点（Rust，含 static/ 面板前端 + team 工作团队）
 nodes/{rust,python,nodejs}/       ← 子节点三实现
-scripts/                          ← starfruit-keepalive.sh（保活）/ starfruit-wake-bridge.sh（hooks 唤醒桥）/ 团队示例
+scripts/                          ← keepalive（保活）/ wake-bridge（hooks 唤醒桥）/ wake-setup（自动对接）/
+                                    tunnel（独立公网隧道）/ cucumber（可选集成）/ update（更新）/ 团队示例
 reference/                        ← legacy ws-hub v0.2.0 等历史归档
 ```

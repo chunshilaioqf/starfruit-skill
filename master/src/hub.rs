@@ -334,13 +334,20 @@ async fn handle_text(
         let ver = v.get("ver").and_then(|r| r.as_u64()).unwrap_or(1);
 
         let mut map = state.peers.lock().await;
-        // 同名重连：顶掉旧连接（向旧连接发 Close），本连接接管名字。
-        if let Some(old) = map.insert(name.clone(), out_tx.clone()) {
-            if !old.same_channel(out_tx) {
-                let _ = old.send(Message::Close(None));
-                eprintln!("[hub] {name} 重连，已顶掉旧连接");
-            }
+        // 名称唯一规则：名字已被在线连接占用 → 拒绝（name_conflict），不顶替。
+        // 旧连接断开（离线）后同名可重新注册。
+        if map.contains_key(&name) {
+            let _ = out_tx.send(Message::text(sys_json(
+                "name_conflict",
+                &format!(
+                    "节点名 {name} 已被在线连接占用：节点名称全网唯一，请更换名称，或待旧连接断开后重试"
+                ),
+            )));
+            let _ = out_tx.send(Message::Close(None));
+            eprintln!("[hub] {name} 名称冲突（已有同名在线连接），已拒绝");
+            return None;
         }
+        map.insert(name.clone(), out_tx.clone());
         *my_name = Some(name.clone());
         let online = map.len();
 

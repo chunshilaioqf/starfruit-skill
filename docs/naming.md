@@ -32,4 +32,5 @@
 | 子节点 Python | `starfruit_node.py` |
 | 子节点 Node.js | `starfruit-node.js` |
 | Web 面板 | starfruit panel |
-| 运行数据目录 | `starfruit-data/`（日志、pidfile、wake.log、历史 JSONL） |
+| 运行数据目录 | 默认用户级 `~/.starfruit`（主节点 `master/`、子节点 `nodes/<name>/`）；`--data-dir` 可覆盖（日志、pidfile、wake.log、历史 JSONL） |
+| 节点名 | 全网唯一（创建与登录双重校验；在线重名回执 `name_conflict`，客户端退出码 4） |

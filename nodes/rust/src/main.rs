@@ -17,16 +17,22 @@ use tokio_tungstenite::tungstenite::Message;
 
 const BACKOFF: [u64; 5] = [2, 4, 8, 16, 30];
 
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const REPO_URL: &str = "https://github.com/chunshilaioqf/starfruit-skill";
+const CHANGELOG_URL: &str =
+    "https://raw.githubusercontent.com/chunshilaioqf/starfruit-skill/main/CHANGELOG.md";
+const UPDATE_CHECK_INTERVAL_MS: u64 = 7 * 86400 * 1000;
+
 const HELP: &str = r#"starfruit 子节点（Rust 版）
 用法: starfruit-node --name <名字> [选项]
 
 选项:
   --server <url>     主节点地址 ws:// 或 wss://（默认 ws://127.0.0.1:10001）
-  --name <name>      节点名（全网唯一，必填）
+  --name <name>      节点名（全网唯一，必填；重名在线连接会被拒绝 name_conflict）
   --role <role>      角色标签（默认 worker）
   --mode plain|tls   加密模式，必须与主节点一致（默认 plain）
   --token <jwt>      JWT 令牌（主节点 --issue-token <本节点名> 签发；公网模式必填）
-  --data-dir <dir>   运行数据目录（默认 ./starfruit-data）
+  --data-dir <dir>   运行数据目录（默认 ~/.starfruit/nodes/<name>）
   --wake-cmd <sh>    wake 唤醒钩子：shell 命令（SF_FROM/SF_TO/SF_TEXT/SF_TS）
   --wake-url <url>   wake 唤醒钩子：HTTP POST JSON
   --ca-cert <path>   TLS CA 证书（缺省信任自签）
@@ -46,6 +52,7 @@ struct Cfg {
     ca_cert: Option<PathBuf>,
     daemon: bool,
     daemon_child: bool,
+    data_dir_explicit: bool,
 }
 
 fn parse_args() -> Cfg {
@@ -61,6 +68,7 @@ fn parse_args() -> Cfg {
         ca_cert: None,
         daemon: false,
         daemon_child: false,
+        data_dir_explicit: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -72,7 +80,10 @@ fn parse_args() -> Cfg {
             "--role" => cfg.role = val("--role"),
             "--mode" => cfg.mode = val("--mode"),
             "--token" => cfg.token = Some(val("--token")),
-            "--data-dir" => cfg.data_dir = PathBuf::from(val("--data-dir")),
+            "--data-dir" => {
+                cfg.data_dir = PathBuf::from(val("--data-dir"));
+                cfg.data_dir_explicit = true;
+            }
             "--wake-cmd" => cfg.wake_cmd = Some(val("--wake-cmd")),
             "--wake-url" => cfg.wake_url = Some(val("--wake-url")),
             "--ca-cert" => cfg.ca_cert = Some(PathBuf::from(val("--ca-cert"))),
@@ -92,7 +103,19 @@ fn parse_args() -> Cfg {
     if cfg.mode != "plain" && cfg.mode != "tls" {
         panic!("--mode 只能是 plain|tls");
     }
+    if !cfg.data_dir_explicit {
+        cfg.data_dir = user_data_root().join("nodes").join(&cfg.name);
+    }
     cfg
+}
+
+/// 用户级数据根目录 `~/.starfruit`（跨平台：HOME / USERPROFILE）。
+fn user_data_root() -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".starfruit")
 }
 
 fn log(msg: &str) {
@@ -287,6 +310,68 @@ fn trigger_wake(cfg: &Cfg, v: &Value) {
     }
 }
 
+// ─────────────────────────── 每周更新检查 ───────────────────────────
+
+/// 从 CHANGELOG 提取最新已发布版本号（首个 `## [x.y.z]`，跳过 Unreleased）。
+fn parse_latest_version(changelog: &str) -> Option<String> {
+    for line in changelog.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("## [") {
+            if let Some(ver) = rest.split(']').next() {
+                if ver.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                    return Some(ver.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn version_newer(latest: &str, current: &str) -> bool {
+    let parse = |s: &str| -> Vec<u64> {
+        s.split('.').map(|p| p.trim().parse().unwrap_or(0)).collect()
+    };
+    parse(latest) > parse(current)
+}
+
+/// 每周一次比对线上 CHANGELOG；失败静默（不推进时间戳，下次连接再试）。
+fn check_update_weekly(data_dir: &std::path::Path) {
+    let marker = data_dir.join("update-check.json");
+    let cached: Value = std::fs::read_to_string(&marker)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null);
+    let last = cached.get("ts_ms").and_then(|t| t.as_u64()).unwrap_or(0);
+    let now = now_ms();
+    let mut latest = cached
+        .get("latest")
+        .and_then(|l| l.as_str())
+        .map(str::to_string);
+    if now.saturating_sub(last) >= UPDATE_CHECK_INTERVAL_MS {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(8))
+            .build();
+        if let Ok(resp) = agent.get(CHANGELOG_URL).call() {
+            if let Ok(body) = resp.into_string() {
+                if let Some(v) = parse_latest_version(&body) {
+                    latest = Some(v);
+                    let _ = std::fs::write(
+                        &marker,
+                        serde_json::json!({ "ts_ms": now, "latest": latest }).to_string(),
+                    );
+                }
+            }
+        }
+    }
+    if let Some(v) = latest {
+        if version_newer(&v, CURRENT_VERSION) {
+            log(&format!(
+                "发现新版本 {v}（当前 {CURRENT_VERSION}）：请提醒用户更新 —— {REPO_URL}（scripts/starfruit-update.sh，含数据迁移检查）"
+            ));
+        }
+    }
+}
+
 // ─────────────────────────── 连接与主循环 ───────────────────────────
 
 fn main() {
@@ -323,6 +408,10 @@ async fn run_forever(cfg: Cfg) {
                 if e.contains("unauthorized") {
                     log("JWT 令牌校验失败，请向主节点申请 --issue-token 签发的令牌后以 --token 重试");
                     std::process::exit(3);
+                }
+                if e.contains("name_conflict") {
+                    log("节点名称全网唯一：请更换 --name，或待同名旧连接断开后重试");
+                    std::process::exit(4);
                 }
             }
         }
@@ -442,6 +531,10 @@ async fn connect_once(cfg: &Cfg) -> Result<(), String> {
     };
 
     log(&format!("连接 {}（mode={}）", cfg.server, cfg.mode));
+    {
+        let dir = cfg.data_dir.clone();
+        let _ = tokio::task::spawn_blocking(move || check_update_weekly(&dir)).await;
+    }
     let raw = TcpStream::connect((host.as_str(), port))
         .await
         .map_err(|e| format!("TCP 连接失败: {e}"))?;
@@ -510,6 +603,13 @@ fn on_frame(cfg: &Cfg, inbox_path: &std::path::Path, text: &str) -> Option<Strin
             ));
             return Some("unauthorized".into());
         }
+        if code == "name_conflict" {
+            log(&format!(
+                "节点名冲突（服务端报错）：{}",
+                v.get("detail").and_then(|d| d.as_str()).unwrap_or("")
+            ));
+            return Some("name_conflict".into());
+        }
         log(&format!(
             "系统回执 {code}: {}",
             v.get("detail").and_then(|d| d.as_str()).unwrap_or("")
@@ -539,5 +639,14 @@ mod tests {
     fn 时间戳格式化_为_utc_展示形状() {
         // 2026-11-12 09:00:00 UTC = 1794474000000 ms
         assert_eq!(fmt_ts(1794474000000), "2026-11-12 09:00:00");
+    }
+
+    #[test]
+    fn 更新检查_版本解析与比较() {
+        let cl = "# Changelog\n\n## [Unreleased]\n\n## [0.10.0] - 2026-11-18\n\n## [0.9.0]\n";
+        assert_eq!(parse_latest_version(cl).as_deref(), Some("0.10.0"));
+        assert!(version_newer("0.10.0", "0.9.0"));
+        assert!(!version_newer("0.9.0", "0.10.0"));
+        assert!(!version_newer("0.10.0", "0.10.0"));
     }
 }

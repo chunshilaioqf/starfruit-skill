@@ -255,12 +255,16 @@ async fn messages_json(state: &Arc<State>, query: Option<&str>) -> Value {
 async fn stats_json(state: &Arc<State>) -> Value {
     let reg = state.registry.lock().await;
     let hist = state.history.lock().await;
+    let update = state.update.lock().await.clone();
     serde_json::json!({
         "online": reg.values().filter(|m| m.online).count(),
         "registered": reg.len(),
         "total_messages": state.msg_total.load(std::sync::atomic::Ordering::Relaxed),
         "history_size": hist.records.len(),
         "uptime_sec": now_ms().saturating_sub(state.started_at_ms) / 1000,
+        "version": crate::update::CURRENT_VERSION,
+        "repo_url": crate::update::REPO_URL,
+        "update": update,
     })
 }
 

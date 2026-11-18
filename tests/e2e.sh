@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# starfruit 端到端自测：主节点 + 三语言子节点 + 双模式报错 + 面板 API + wake + 离线队列 + 工作团队。
+# starfruit 端到端自测：主节点 + 三语言子节点 + 双模式报错 + 面板 API + wake + 离线队列 + 工作团队
+# + 名称唯一 + 首启向导/节点文档 + 用户级默认目录 + 运维脚本。
 # 用法: bash tests/e2e.sh   （需已编译 master 与 nodes/rust；需 python3 与 node）
 set -u
 
@@ -10,12 +11,19 @@ ok()   { PASS=$((PASS+1)); echo "  ✅ $1"; }
 bad()  { FAIL=$((FAIL+1)); echo "  ❌ $1"; }
 check(){ if eval "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1"; fi }
 
+# 预置每周更新检查标记（latest=0.0.0），让 e2e 离线可重复、不等待网络。
+seed_uc() {
+  mkdir -p "$1"
+  printf '{"ts_ms":%s000,"latest":"0.0.0"}' "$(date +%s)" > "$1/update-check.json"
+}
+
 MASTER="$ROOT/master/target/release/starfruit-master"
 NODE_RS="$ROOT/nodes/rust/target/release/starfruit-node"
 NODE_PY="$ROOT/nodes/python/starfruit_node.py"
 NODE_JS="$ROOT/nodes/nodejs/starfruit-node.js"
 
 rm -rf "$WORK"; mkdir -p "$WORK"
+seed_uc "$WORK/plain"; seed_uc "$WORK/tls"
 cleanup() {
   for f in "$WORK"/*.pid; do
     [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null
@@ -41,6 +49,12 @@ check "面板首页含浏览器图标链接" "curl -sf http://127.0.0.1:19502/ |
 check "面板 favicon（PNG）可访问" "curl -sf -o /dev/null -w '%{content_type}' http://127.0.0.1:19502/static/img/favicon-32.png | grep -q image/png"
 check "面板 logo（SVG）可访问" "curl -sf -o /dev/null -w '%{content_type}' http://127.0.0.1:19502/static/img/logo.svg | grep -q image/svg+xml"
 check "面板 SSE /events 可访问" "curl -sf -m 2 http://127.0.0.1:19502/events | head -1 | grep -q 'data\|ping'"
+check "面板含历史弹窗按钮" "curl -sf http://127.0.0.1:19502/ | grep -q 'history-btn'"
+check "面板含中英切换按钮" "curl -sf http://127.0.0.1:19502/ | grep -q 'lang-btn'"
+check "面板含配色切换按钮" "curl -sf http://127.0.0.1:19502/ | grep -q 'color-btn'"
+check "面板含 GitHub 仓库链接" "curl -sf http://127.0.0.1:19502/ | grep -q 'github.com/chunshilaioqf/starfruit-skill'"
+check "面板 app.js 含双语字典" "curl -sf http://127.0.0.1:19502/app.js | grep -q 'I18N'"
+check "/api/stats 含版本与仓库地址" "curl -sf http://127.0.0.1:19502/api/stats | grep -q 'repo_url'"
 
 echo "── 2. 三语言子节点接入 + 注册回执 ──"
 python3 "$NODE_PY" --name worker-py --mode plain --server ws://127.0.0.1:19501 \
@@ -152,6 +166,7 @@ check "端口被占用自动 +1（19711→19713）" "grep -q 'ws://127.0.0.1:197
 echo "── 10. JWT 令牌（主节点签发 + 子节点校验）──"
 JWT_DIR="$WORK/jwt"
 mkdir -p "$JWT_DIR"
+seed_uc "$JWT_DIR"
 TOKEN="$("$MASTER" --issue-token worker-jwt --data-dir "$JWT_DIR" 2>/dev/null | tail -1)"
 check "主节点可签发 JWT 令牌（header.payload.signature）" \
   "[ \$(printf '%s' '$TOKEN' | awk -F. '{print NF}') -eq 3 ]"
@@ -180,6 +195,7 @@ check "借用他人令牌被拒绝（sub 不一致）" "grep -q 'JWT 令牌校�
 echo "── 11. 公网模式强制 tls + jwt ──"
 PUB_DIR="$WORK/jwt-pub"
 mkdir -p "$PUB_DIR"
+seed_uc "$PUB_DIR"
 "$MASTER" --deploy public --mode tls --hub-addr 127.0.0.1:19741 --web-addr 127.0.0.1:19742 \
   --data-dir "$PUB_DIR" >"$WORK/master-public.log" 2>&1 &
 echo $! > "$WORK/master-public.pid"
@@ -219,6 +235,100 @@ check "保活脚本：正常退出（exit 0）不重启" \
   "bash '$ROOT/scripts/starfruit-keepalive.sh' true 2>&1 | grep -q '正常退出'"
 check "唤醒桥：缺少参数时提示用法" \
   "bash '$ROOT/scripts/starfruit-wake-bridge.sh' 2>&1 | grep -q '用法'"
+
+echo "── 13. 节点名称唯一（在线重名拒绝 name_conflict，退出码 4）──"
+python3 "$NODE_PY" --name worker-rs --mode plain --server ws://127.0.0.1:19501 \
+  --data-dir "$WORK/plain" >"$WORK/dup-node.log" 2>&1
+DUP_RC=$?
+check "重名在线连接被拒绝（日志含 name_conflict 提示）" "grep -q '节点名冲突' $WORK/dup-node.log"
+check "重名客户端退出码为 4" "[ $DUP_RC -eq 4 ]"
+check "主节点日志记录名称冲突" "grep -q '名称冲突' $WORK/master-plain.log"
+check "原同名节点仍在线（未被顶替）" "curl -sf http://127.0.0.1:19502/api/nodes | python3 -c 'import json,sys; d=json.load(sys.stdin); ns=[n for n in d[\"nodes\"] if n[\"name\"]==\"worker-rs\"]; assert len(ns)==1 and ns[0][\"online\"]'"
+
+echo "── 14. 首启向导 + starfruit-nodes.md 生成与动态更新 ──"
+WIZ_DIR="$WORK/wizard"; WIZ_RUN="$WORK/wizard-run"; WIZ_HOME="$WORK/wizard-home"
+mkdir -p "$WIZ_DIR" "$WIZ_RUN/.git" "$WIZ_HOME"
+seed_uc "$WIZ_DIR"
+printf '1\nplain\nY\n2\nY\nwiz-team\nworker-w1 backend 后端\n\n\n' > "$WORK/wiz-answers.txt"
+(cd "$WIZ_RUN" && exec env HOME="$WIZ_HOME" "$MASTER" --setup \
+  --hub-addr 127.0.0.1:19771 --web-addr 127.0.0.1:19772 \
+  --data-dir "$WIZ_DIR" --manager-name manager \
+  < "$WORK/wiz-answers.txt" >"$WORK/master-wiz.log" 2>&1) &
+echo $! > "$WORK/master-wiz.pid"
+sleep 1.5
+check "向导完成并落盘 setup.json" "[ -f '$WIZ_DIR/setup.json' ]"
+check "向导创建团队 team.json（含 worker-w1）" "grep -q worker-w1 '$WIZ_DIR/team.json'"
+check "向导签发令牌 tokens.json" "grep -q worker-w1 '$WIZ_DIR/tokens.json'"
+check "令牌文件权限 0600" "[ \$(stat -f '%Lp' '$WIZ_DIR/tokens.json' 2>/dev/null || stat -c '%a' '$WIZ_DIR/tokens.json') = 600 ]"
+check "生成 starfruit-nodes.md（含主节点地址）" "grep -q 'ws://127.0.0.1:19771' '$WIZ_RUN/starfruit-nodes.md'"
+check "节点文档含成员连接提示词代码块" "grep -q '\`\`\`text' '$WIZ_RUN/starfruit-nodes.md'"
+check "节点文档含真实令牌（--token）" "grep -q -- '--token ey' '$WIZ_RUN/starfruit-nodes.md'"
+check "starfruit-nodes.md 已加入 .gitignore" "grep -q 'starfruit-nodes.md' '$WIZ_RUN/.gitignore'"
+check "启动横幅向用户展示成员令牌" "grep -q 'worker-w1 : ey' $WORK/master-wiz.log"
+WIZ_TOKEN="$(python3 -c "import json;print(json.load(open('$WIZ_DIR/tokens.json'))['worker-w1'])")"
+seed_uc "$WORK/wiz-node"
+python3 "$NODE_PY" --name worker-w1 --mode plain --server ws://127.0.0.1:19771 \
+  --data-dir "$WORK/wiz-node" --token "$WIZ_TOKEN" >"$WORK/worker-w1.log" 2>&1 &
+echo $! > "$WORK/worker-w1.pid"
+sleep 2.5
+check "向导签发的令牌可正常注册" "grep -q registered $WORK/worker-w1.log"
+check "节点上线后文档动态更新为在线" "grep -q '🟢 在线' '$WIZ_RUN/starfruit-nodes.md'"
+kill "$(cat "$WORK/worker-w1.pid")" 2>/dev/null
+sleep 2.5
+check "节点离线后文档动态更新为离线" "grep -q '⚪ 离线' '$WIZ_RUN/starfruit-nodes.md'"
+(cd "$WIZ_RUN" && exec env HOME="$WIZ_HOME" "$MASTER" \
+  --hub-addr 127.0.0.1:19773 --web-addr 127.0.0.1:19774 \
+  --data-dir "$WIZ_DIR" --manager-name manager \
+  >"$WORK/master-wiz2.log" 2>&1) &
+echo $! > "$WORK/master-wiz2.pid"
+sleep 1.5
+check "再次启动复用 setup.json（不再进向导）" "grep -q '已加载首启配置' $WORK/master-wiz2.log"
+check "二次启动未出现向导" "! grep -q '首次启动向导' $WORK/master-wiz2.log"
+kill "$(cat "$WORK/master-wiz2.pid")" 2>/dev/null
+
+echo "── 15. 用户级默认数据目录 ~/.starfruit/nodes/<name> ──"
+FAKE_HOME="$WORK/fakehome"
+mkdir -p "$FAKE_HOME"
+seed_uc "$FAKE_HOME/.starfruit/nodes/def-dir-node"
+HOME="$FAKE_HOME" python3 "$NODE_PY" --name def-dir-node --mode plain \
+  --server ws://127.0.0.1:19501 >"$WORK/def-dir.log" 2>&1 &
+echo $! > "$WORK/def-dir.pid"
+sleep 2
+check "缺省 --data-dir 落到 ~/.starfruit/nodes/<name>" "[ -d '$FAKE_HOME/.starfruit/nodes/def-dir-node' ]"
+check "默认目录节点注册成功" "grep -q registered $WORK/def-dir.log"
+echo '{"to":"def-dir-node","type":"chat","text":"e2e-defdir"}' >> "$WORK/plain/manager.outbox.jsonl"
+sleep 1.5
+check "inbox 写入默认目录" "grep -q e2e-defdir '$FAKE_HOME/.starfruit/nodes/def-dir-node/def-dir-node.inbox.jsonl'"
+kill "$(cat "$WORK/def-dir.pid")" 2>/dev/null
+seed_uc "$FAKE_HOME/.starfruit/nodes/def-dir-js"
+HOME="$FAKE_HOME" node "$NODE_JS" --name def-dir-js --mode plain \
+  --server ws://127.0.0.1:19501 >"$WORK/def-dir-js.log" 2>&1 &
+echo $! > "$WORK/def-dir-js.pid"
+sleep 2
+check "nodejs 缺省 --data-dir 同样落到 ~/.starfruit/nodes/<name>" "grep -q registered $WORK/def-dir-js.log && [ -d '$FAKE_HOME/.starfruit/nodes/def-dir-js' ]"
+kill "$(cat "$WORK/def-dir-js.pid")" 2>/dev/null
+
+echo "── 16. 运维脚本（tunnel / wake-setup / cucumber / update）──"
+check "tunnel 脚本：缺参数提示用法" "bash '$ROOT/scripts/starfruit-tunnel.sh' 2>&1 | grep -q '用法'"
+check "tunnel 脚本：status 未运行时退出非 0" "! bash '$ROOT/scripts/starfruit-tunnel.sh' status"
+check "update 脚本：--help 提示用法" "bash '$ROOT/scripts/starfruit-update.sh' --help | grep -q '用法'"
+check "cucumber 脚本：缺参数提示用法" "bash '$ROOT/scripts/starfruit-cucumber.sh' 2>&1 | grep -q '用法'"
+check "cucumber 脚本：add 非交互须 --yes（保护用户配置）" \
+  "bash '$ROOT/scripts/starfruit-cucumber.sh' add x y z </dev/null 2>&1 | grep -qE '同意|未找到'"
+WAKE_HOME="$WORK/wake-home"
+mkdir -p "$WAKE_HOME/.claude"
+WAKE_LOG="$WORK/wake-setup-test/wake.log"
+HOME="$WAKE_HOME" bash "$ROOT/scripts/starfruit-wake-setup.sh" "$WAKE_LOG" 'echo woke' >"$WORK/wake-setup.log" 2>&1
+check "wake-setup：注册 Claude Code SessionStart 钩子" \
+  "python3 -c \"import json;c=json.load(open('$WAKE_HOME/.claude/settings.json'));assert any('starfruit-wake-bridge.sh' in h.get('command','') for g in c['hooks']['SessionStart'] for h in g['hooks'])\""
+check "wake-setup：唤醒桥已后台常驻" "[ -f '$WORK/wake-setup-test/wake-bridge.pid' ] && kill -0 \$(cat '$WORK/wake-setup-test/wake-bridge.pid')"
+HOME="$WAKE_HOME" bash "$ROOT/scripts/starfruit-wake-setup.sh" "$WAKE_LOG" 'echo woke' >"$WORK/wake-setup2.log" 2>&1
+check "wake-setup：重复执行幂等（钩子不重复注册）" "grep -q '已存在' $WORK/wake-setup2.log"
+echo '{"from":"manager","to":"def","text":"wake-setup-e2e","ts":"now"}' >> "$WAKE_LOG"
+sleep 1.5
+check "wake-setup：唤醒桥触发唤醒命令" "grep -q 'wake-setup-e2e' $WORK/wake-setup-test/wake-bridge.log"
+[ -f "$WORK/wake-setup-test/wake-bridge.pid" ] && kill "$(cat "$WORK/wake-setup-test/wake-bridge.pid")" 2>/dev/null
+echo '{}' >> "$WAKE_LOG"  # 让残留的 tail 管道收到 SIGPIPE 退出
 
 echo
 echo "════════ 结果: ✅ $PASS 通过 / ❌ $FAIL 失败 ════════"

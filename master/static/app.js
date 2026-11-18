@@ -1,18 +1,65 @@
-/* starfruit panel —— 只读可视化：拓扑 + 消息流动画（canvas 粒子）+ 实时流 + 历史 */
+/* starfruit panel —— 只读可视化：拓扑动画 + 实时流 + 历史弹窗 + 中英双语 */
 /* 零依赖、零构建。数据来源：/api/* 轮询 + /events SSE。 */
 
 (() => {
   "use strict";
 
+  // ─────────────────────────── i18n ───────────────────────────
+  const I18N = {
+    zh: {
+      subtitle: "多节点 WS 协同面板", mode: "模式", online: "在线节点", msgs: "消息总数",
+      uptime: "运行时长", history: "消息历史", nodes: "节点", topology: "消息流转拓扑",
+      feed: "实时消息", feedHint: "最新 60 条", legendHub: "主节点 hub", legendOnline: "在线",
+      legendOffline: "离线", legendFlow: "消息流动", topoHint: "点击节点查看最近消息",
+      from: "从", type: "类型", contains: "包含", all: "全部", filterPh: "过滤文本…",
+      loadMore: "加载更早", thTime: "时间", thFrom: "发送方", thTo: "接收方", thType: "类型",
+      thStatus: "状态", thContent: "内容", foot: "无鉴权 · 全部只读",
+      connecting: "连接中…", live: "实时连接", reconnecting: "重连中…",
+      tls: "TLS 加密", plain: "plain 明文", recv: "收", sent: "发", backlog: "积压",
+      colorMono: "单色配色", colorMulti: "多彩配色", noMessages: "暂无",
+      recentMsgs: "最近 5 条消息", loaded: "已加载", current: "当前筛选", items: "条",
+      nodesUnit: "个", updateFound: "发现新版本", currentVer: "当前",
+      viewRepo: "前往仓库", updateHint: "运行 scripts/starfruit-update.sh 更新（含数据迁移检查）",
+    },
+    en: {
+      subtitle: "Multi-node WS collaboration panel", mode: "Mode", online: "Online", msgs: "Messages",
+      uptime: "Uptime", history: "History", nodes: "Nodes", topology: "Message Topology",
+      feed: "Live Feed", feedHint: "latest 60", legendHub: "master hub", legendOnline: "online",
+      legendOffline: "offline", legendFlow: "message flow", topoHint: "click a node for recent messages",
+      from: "From", type: "Type", contains: "Contains", all: "All", filterPh: "filter text…",
+      loadMore: "Load older", thTime: "Time", thFrom: "From", thTo: "To", thType: "Type",
+      thStatus: "Status", thContent: "Content", foot: "no auth · read-only",
+      connecting: "Connecting…", live: "Live", reconnecting: "Reconnecting…",
+      tls: "TLS encrypted", plain: "plain text", recv: "in", sent: "out", backlog: "queued",
+      colorMono: "Mono color", colorMulti: "Multi color", noMessages: "None yet",
+      recentMsgs: "Last 5 messages", loaded: "Loaded", current: "filtered", items: "",
+      nodesUnit: "", updateFound: "New version available", currentVer: "current",
+      viewRepo: "Open repository", updateHint: "run scripts/starfruit-update.sh (with data migration check)",
+    },
+  };
+  let lang = localStorage.getItem("sf-lang") === "en" ? "en" : "zh";
+  const t = (k) => I18N[lang][k] ?? I18N.zh[k] ?? k;
+
+  function applyLang() {
+    document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+    document.querySelectorAll("[data-i18n]").forEach((el) => { el.textContent = t(el.dataset.i18n); });
+    document.querySelectorAll("[data-i18n-ph]").forEach((el) => { el.placeholder = t(el.dataset.i18nPh); });
+    $("lang-label").textContent = lang === "zh" ? "EN" : "中文";
+    $("color-btn").textContent = state.colorMode === "mono" ? t("colorMulti") : t("colorMono");
+    renderNodes(); renderFeed(); renderHistory(); refreshStatsText(); updateLiveText();
+  }
+
   // ─────────────────────────── 全局状态 ───────────────────────────
   const state = {
-    nodes: new Map(),          // name -> node meta
-    feed: [],                  // 最新消息（上限 60）
-    history: [],               // 当前已加载历史（升序）
+    nodes: new Map(),
+    feed: [],
+    history: [],
     historyTotal: 0,
-    oldestSeq: null,           // 分页游标
+    oldestSeq: null,
     stats: {},
     mode: "plain",
+    colorMode: localStorage.getItem("sf-color") === "multi" ? "multi" : "mono",
+    sseOn: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -33,13 +80,30 @@
   }
 
   async function refreshStats() {
-    const s = await fetchJSON("/api/stats");
-    state.stats = s;
+    state.stats = await fetchJSON("/api/stats");
+    refreshStatsText();
+  }
+
+  function refreshStatsText() {
+    const s = state.stats;
     $("stat-online").textContent = `${s.online ?? 0} / ${s.registered ?? 0}`;
     $("stat-msgs").textContent = fmtNum(s.total_messages ?? 0);
     $("stat-uptime").textContent = fmtDur(s.uptime_sec ?? 0);
-    $("stat-mode").textContent = state.mode === "tls" ? "TLS 加密" : "plain 明文";
+    $("stat-mode").textContent = state.mode === "tls" ? t("tls") : t("plain");
     $("foot-mode").textContent = `mode=${state.mode}`;
+    if (s.repo_url) {
+      $("repo-link").href = s.repo_url;
+      $("update-link").href = s.repo_url;
+    }
+    $("foot-version").textContent = s.version ? `v${s.version}` : "";
+    const up = s.update;
+    if (up && up.update_available) {
+      $("update-text").textContent =
+        `⭐ ${t("updateFound")} v${up.latest_version}（${t("currentVer")} v${up.current_version}）· ${t("updateHint")}`;
+      $("update-banner").hidden = false;
+    } else {
+      $("update-banner").hidden = true;
+    }
   }
 
   async function fetchHistory(limit = 120, before = "") {
@@ -52,20 +116,25 @@
     }
     state.history.sort((a, b) => a.seq - b.seq);
     if (state.history.length) state.oldestSeq = state.history[0].seq;
-    $("history-hint").textContent = `已加载 ${state.history.length} / ${state.historyTotal} 条`;
     renderHistory();
   }
 
   // ─────────────────────────── 实时事件（SSE） ───────────────────────────
+  function updateLiveText() {
+    $("live-state").textContent = state.sseOn ? t("live") : t("reconnecting");
+  }
+
   function connectSSE() {
     const es = new EventSource("/events");
     es.onopen = () => {
+      state.sseOn = true;
       $("live-dot").className = "live-dot on";
-      $("live-state").textContent = "实时连接";
+      updateLiveText();
     };
     es.onerror = () => {
+      state.sseOn = false;
       $("live-dot").className = "live-dot off";
-      $("live-state").textContent = "重连中…";
+      updateLiveText();
     };
     es.onmessage = (e) => {
       let ev;
@@ -74,42 +143,51 @@
       else if (ev.ev === "node_join" || ev.ev === "node_leave") {
         refreshNodes();
         refreshStats();
-        if (ev.ev === "node_join" && ev.data && ev.data.name) flashNode(ev.data.name);
+        const now = performance.now();
+        if (ev.ev === "node_join") {
+          topo.hubBlinkUntil = now + 10000;   // 新节点上线：HUB 闪烁 10s
+          if (ev.data && ev.data.name) flashNode(ev.data.name);
+        } else {
+          topo.hubJitterUntil = now + 10000;  // 节点离线：HUB 红色剧烈跳动 10s
+        }
+      } else if (ev.ev === "update") {
+        refreshStats();
       }
     };
   }
 
   function onMessage(m) {
-    // 实时消息流
     state.feed.unshift(m);
     if (state.feed.length > 60) state.feed.pop();
     renderFeed();
+    if (popupNode) renderPopup(popupNode);
 
-    // 历史
     if (m.seq && !state.history.some((x) => x.seq === m.seq)) {
       state.history.push(m);
       state.historyTotal = Math.max(state.historyTotal, m.seq);
-      renderHistory();
+      if (!$("history-mask").hidden) renderHistory();
     }
 
-    // 拓扑动画：沿辐条流动（经 hub 中转两段）
-    const fromHub = m.from === "manager" || m.from === state.hubName;
-    const toAll = m.to === "all";
+    // 拓扑：消息流动（经 hub 中转两段）+ 工作状态 + HUB 快转 5s
+    const now = performance.now();
+    topo.hubSpinUntil = now + 5000;
     const src = m.from;
     const dst = m.to;
-    if (toAll) {
+    if (dst === "all") {
       for (const name of state.nodes.keys()) {
-        if (name !== src) spawnFlow(name, src, 0);   // → hub
-        if (name !== src) spawnFlow(src, name, 220); // hub → 全员
+        if (name !== src) spawnFlow(name, src, 0);
+        if (name !== src) spawnFlow(src, name, 220);
       }
     } else {
       spawnFlow(src, "hub", 0);
       spawnFlow("hub", dst, 200);
     }
-
+    if (src) { flashNode(src); topo.activity.set(src, now); }
+    if (dst && dst !== "all") { flashNode(dst); topo.activity.set(dst, now); }
+    if (dst === "all") {
+      for (const name of state.nodes.keys()) if (name !== src) topo.activity.set(name, now);
+    }
     refreshStats();
-    if (m.from) flashNode(m.from);
-    if (dst && dst !== "all") flashNode(dst);
   }
 
   // ─────────────────────────── 渲染：节点列表 ───────────────────────────
@@ -117,7 +195,7 @@
     const box = $("node-list");
     box.innerHTML = "";
     const names = [...state.nodes.keys()].sort();
-    $("node-count").textContent = `${names.length} 个`;
+    $("node-count").textContent = `${names.length} ${t("nodesUnit")}`.trim();
     for (const name of names) {
       const n = state.nodes.get(name);
       const card = document.createElement("div");
@@ -132,9 +210,9 @@
           <span class="node-role ${roleCls}">${esc(n.role)}</span>
         </div>
         <div class="node-meta">
-          <span>发 <b>${fmtNum(n.msgs_out)}</b></span>
-          <span>收 <b>${fmtNum(n.msgs_in)}</b></span>
-          <span>积压 <b>${fmtNum(n.backlog)}</b></span>
+          <span>${t("sent")} <b>${fmtNum(n.msgs_out)}</b></span>
+          <span>${t("recv")} <b>${fmtNum(n.msgs_in)}</b></span>
+          <span>${t("backlog")} <b>${fmtNum(n.backlog)}</b></span>
           <span>mode <b>${esc(n.mode)}</b></span>
         </div>`;
       box.appendChild(card);
@@ -144,7 +222,11 @@
   function renderFromFilter() {
     const sel = $("f-from");
     const cur = sel.value;
-    sel.innerHTML = `<option value="">全部</option>`;
+    sel.innerHTML = "";
+    const all = document.createElement("option");
+    all.value = "";
+    all.textContent = t("all");
+    sel.appendChild(all);
     for (const name of [...state.nodes.keys()].sort()) {
       const o = document.createElement("option");
       o.value = name;
@@ -175,7 +257,7 @@
     }
   }
 
-  // ─────────────────────────── 渲染：历史表 ───────────────────────────
+  // ─────────────────────────── 渲染：历史表（弹窗内） ───────────────────────────
   function renderHistory() {
     const body = $("history-body");
     const fromF = $("f-from").value;
@@ -187,7 +269,7 @@
       if (typeF && (m.type || "chat") !== typeF) return false;
       if (textF && !String(m.text || "").toLowerCase().includes(textF)) return false;
       return true;
-    }).slice(-300).reverse(); // 最新在上，最多 300 行
+    }).slice(-300).reverse();
 
     body.innerHTML = "";
     for (const m of rows) {
@@ -204,24 +286,42 @@
       body.appendChild(tr);
     }
     $("history-hint").textContent =
-      `已加载 ${state.history.length} / ${state.historyTotal} 条 · 当前筛选 ${rows.length} 条`;
+      `${t("loaded")} ${state.history.length} / ${state.historyTotal} ${t("items")} · ${t("current")} ${rows.length} ${t("items")}`.replace(/\s+/g, " ").trim();
   }
 
-  // ─────────────────────────── 拓扑画布 + 消息流动画 ───────────────────────────
+  // ─────────────────────────── 历史弹窗 ───────────────────────────
+  function openHistory() {
+    $("history-mask").hidden = false;
+    if (!state.history.length) fetchHistory(120);
+    else renderHistory();
+  }
+  function closeHistory() { $("history-mask").hidden = true; }
+
+  // ─────────────────────────── 拓扑画布 ───────────────────────────
   const canvas = $("topo");
   const ctx = canvas.getContext("2d");
+  const logoImg = new Image();
+  logoImg.src = "/static/img/logo.svg";
+
   const topo = {
     w: 0, h: 0, cx: 0, cy: 0, r: 0,
-    pos: new Map(),        // name -> {x, y}
-    flash: new Map(),      // name -> ts
-    edgeFlash: new Map(),  // name -> ts
-    particles: [],         // {x0,y0,x1,y1,t,speed,color,r}
+    pos: new Map(),
+    flash: new Map(),       // name -> ts（消息放大高亮，5s 缓慢回落）
+    activity: new Map(),    // name -> ts（最近收发 → 工作中齿轮旋转）
+    edgeFlash: new Map(),
+    particles: [],
+    hubSpinUntil: 0,        // 新消息：HUB 快转 5s
+    hubBlinkUntil: 0,       // 新节点上线：HUB 闪烁 10s
+    hubJitterUntil: 0,      // 节点离线：HUB 红色剧烈跳动 10s
+    hubRot: 0,
+    lastFrame: performance.now(),
     birth: performance.now(),
   };
 
   function resize() {
     const wrap = canvas.parentElement;
     const dpr = window.devicePixelRatio || 1;
+    topo.dpr = dpr;
     topo.w = wrap.clientWidth;
     topo.h = wrap.clientHeight;
     canvas.width = topo.w * dpr;
@@ -266,14 +366,184 @@
     if (delayMs > 0) setTimeout(go, delayMs); else go();
   }
 
+  // ── 配色：单色（主节点/工作节点各一色）或多彩（名称哈希 → HSL） ──
+  function nameHash(s) {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return h;
+  }
+
+  function hslToHex(h, s, l) {
+    const a = s * Math.min(l, 1 - l);
+    const f = (n) => {
+      const k = (n + h / 30) % 12;
+      const c = l - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1)));
+      return Math.round(255 * c).toString(16).padStart(2, "0");
+    };
+    return `#${f(0)}${f(8)}${f(4)}`;
+  }
+
+  function nodeColor(name, meta) {
+    if (state.colorMode === "multi") return hslToHex(nameHash(name) % 360, 0.62, 0.6);
+    return meta && meta.internal ? "#b48bff" : "#8fd94d";
+  }
+
+  // 字符颜色 = 节点背景反色，再向白色混合 75%。
+  function charColor(bgHex) {
+    const h = bgHex.replace("#", "");
+    const mix = (i) => {
+      const inv = 255 - parseInt(h.slice(i, i + 2), 16);
+      return Math.round(inv + (255 - inv) * 0.75);
+    };
+    return `rgb(${mix(0)},${mix(2)},${mix(4)})`;
+  }
+
+  function drawGrid() {
+    ctx.strokeStyle = "rgba(128,128,128,0.2)";
+    ctx.lineWidth = 1;
+    const step = 26;
+    ctx.beginPath();
+    for (let x = step; x < topo.w; x += step) { ctx.moveTo(x, 0); ctx.lineTo(x, topo.h); }
+    for (let y = step; y < topo.h; y += step) { ctx.moveTo(0, y); ctx.lineTo(topo.w, y); }
+    ctx.stroke();
+  }
+
+  function drawHub(now, sec) {
+    const dt = Math.min(0.1, (now - topo.lastFrame) / 1000);
+    const spinning = now < topo.hubSpinUntil;
+    const blinking = now < topo.hubBlinkUntil;
+    const jittering = now < topo.hubJitterUntil;
+    topo.hubRot += dt * (spinning ? 7 : 0.35);
+
+    let dx = 0, dy = 0;
+    if (jittering) {
+      dx = (Math.random() - 0.5) * 10;
+      dy = (Math.random() - 0.5) * 10;
+    }
+    const x = topo.cx + dx, y = topo.cy + dy;
+
+    // 光环（离线事件时变红）
+    const pulse = 1 + 0.05 * Math.sin(sec * 2.2);
+    const ringColor = jittering ? "255,107,107" : "195,233,75";
+    for (let i = 0; i < 3; i++) {
+      const rr = (34 + i * 15) * pulse;
+      ctx.beginPath();
+      ctx.arc(x, y, rr, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(${ringColor},${(jittering ? 0.4 : 0.16) - i * 0.04})`;
+      ctx.lineWidth = jittering ? 2.4 : 1.4;
+      ctx.stroke();
+    }
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(topo.hubRot);
+    if (blinking) ctx.globalAlpha = 0.3 + 0.7 * Math.abs(Math.sin(now / 130));
+    if (logoImg.complete && logoImg.naturalWidth > 0) {
+      ctx.drawImage(logoImg, -27, -27, 54, 54);
+    } else {
+      ctx.fillStyle = jittering ? "#ff6b6b" : "#c3e94b";
+      ctx.beginPath();
+      ctx.arc(0, 0, 24 * pulse, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    if (jittering) {
+      ctx.save();
+      ctx.globalAlpha = 0.35 + 0.3 * Math.abs(Math.sin(now / 90));
+      ctx.fillStyle = "#ff6b6b";
+      ctx.beginPath();
+      ctx.arc(x, y, 30, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    ctx.fillStyle = jittering ? "#ff6b6b" : "#93a0b8";
+    ctx.font = "700 10px Inter, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("HUB", x, y + 42);
+  }
+
+  function drawNode(name, p, now, sec) {
+    const meta = state.nodes.get(name);
+    const online = meta ? meta.online : false;
+    const working = online && now - (topo.activity.get(name) ?? -1e9) < 5000;
+    const fl = topo.flash.get(name) ?? -1e9;
+    const k = Math.max(0, 1 - (now - fl) / 5000);   // 5s 缓慢回落
+    const breath = working ? 1 : 1 + 0.06 * Math.sin(sec * 2 + nameHash(name) % 7);
+    const rr = 14 * (1 + 0.45 * k) * breath;
+    const color = online ? nodeColor(name, meta) : "#55617a";
+
+    ctx.save();
+    ctx.translate(p.x, p.y);
+
+    // 光晕：工作中稳定亮；空闲呼吸灯
+    const haloA = working ? 0.28 + 0.2 * k : 0.1 + 0.08 * (0.5 + 0.5 * Math.sin(sec * 2 + nameHash(name) % 7)) + 0.25 * k;
+    ctx.beginPath();
+    ctx.arc(0, 0, rr + 8, 0, Math.PI * 2);
+    ctx.fillStyle = hexAlpha(color, online ? haloA : 0.07);
+    ctx.fill();
+
+    // 工作中：旋转齿轮（8 齿）
+    if (working) {
+      ctx.save();
+      ctx.rotate(now / 350);
+      ctx.fillStyle = hexAlpha(color, 0.85);
+      for (let i = 0; i < 8; i++) {
+        ctx.save();
+        ctx.rotate((i * Math.PI) / 4);
+        ctx.fillRect(rr - 2, -2.6, 6, 5.2);
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+
+    ctx.beginPath();
+    ctx.arc(0, 0, rr, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.strokeStyle = online ? "rgba(255,255,255,0.45)" : "rgba(255,255,255,0.15)";
+    ctx.lineWidth = 1.3;
+    ctx.stroke();
+
+    // 居中旋转的名称首字符：背景反色 + 75% 白，白色辉光
+    ctx.save();
+    ctx.rotate(working ? now / 500 : now / 2600);
+    ctx.shadowColor = "rgba(255,255,255,0.9)";
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = charColor(color);
+    ctx.font = `700 ${Math.round(rr * 1.05)}px Inter, "PingFang SC", sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText([...name][0] || "?", 0, 1);
+    ctx.restore();
+
+    // 名称 + 工作状态（收/发计数）
+    ctx.fillStyle = online ? "#eef3ff" : "#93a0b8";
+    ctx.font = "600 11px Inter, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(trunc(name, 14), 0, rr + 16);
+    if (meta) {
+      ctx.fillStyle = working ? "#c3e94b" : "#93a0b8";
+      ctx.font = "500 9.5px Inter, sans-serif";
+      ctx.fillText(`${t("recv")} ${fmtNum(meta.msgs_in)} · ${t("sent")} ${fmtNum(meta.msgs_out)}`, 0, rr + 29);
+    }
+    ctx.restore();
+  }
+
   function draw(now) {
     const t = (now - topo.birth) / 1000;
+    // 每帧重置变换，避免任何中断累积污染后续帧。
+    ctx.setTransform(topo.dpr || 1, 0, 0, topo.dpr || 1, 0, 0);
     ctx.clearRect(0, 0, topo.w, topo.h);
+    drawGrid();
 
     // 辐条
     for (const [name, p] of topo.pos) {
       if (name === "hub") continue;
-      const fl = topo.edgeFlash.get(name) || 0;
+      const fl = topo.edgeFlash.get(name) ?? -1e9;
       const heat = Math.max(0, 1 - (now - fl) / 1100);
       const grad = ctx.createLinearGradient(topo.cx, topo.cy, p.x, p.y);
       grad.addColorStop(0, `rgba(195,233,75,${0.12 + heat * 0.5})`);
@@ -286,60 +556,9 @@
       ctx.stroke();
     }
 
-    // hub 光环
-    const pulse = 1 + 0.05 * Math.sin(t * 2.2);
-    for (let i = 0; i < 3; i++) {
-      const rr = (30 + i * 16) * pulse;
-      ctx.beginPath();
-      ctx.arc(topo.cx, topo.cy, rr, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(195,233,75,${0.16 - i * 0.045})`;
-      ctx.lineWidth = 1.4;
-      ctx.stroke();
-    }
-    const hubGrad = ctx.createRadialGradient(topo.cx, topo.cy, 4, topo.cx, topo.cy, 34);
-    hubGrad.addColorStop(0, "#d7f05a");
-    hubGrad.addColorStop(1, "#6fbf3a");
-    ctx.fillStyle = hubGrad;
-    ctx.beginPath();
-    ctx.arc(topo.cx, topo.cy, 24 * pulse, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#0b1020";
-    ctx.font = "700 11px Inter, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("HUB", topo.cx, topo.cy);
-
-    // 节点
+    drawHub(now, t);
     for (const [name, p] of topo.pos) {
-      if (name === "hub") continue;
-      const meta = state.nodes.get(name);
-      const online = meta ? meta.online : false;
-      const internal = meta ? meta.internal : false;
-      const fl = topo.flash.get(name) || 0;
-      const hot = Math.max(0, 1 - (now - fl) / 900);
-      const rr = 13 + hot * 4;
-
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, rr + 7, 0, Math.PI * 2);
-      ctx.fillStyle = internal
-        ? `rgba(180,139,255,${0.1 + hot * 0.3})`
-        : online
-          ? `rgba(111,191,58,${0.1 + hot * 0.3})`
-          : "rgba(147,160,184,0.08)";
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, rr, 0, Math.PI * 2);
-      ctx.fillStyle = internal ? "#b48bff" : online ? "#8fd94d" : "#55617a";
-      ctx.fill();
-      ctx.strokeStyle = online ? "rgba(215,240,90,0.7)" : "rgba(255,255,255,0.15)";
-      ctx.lineWidth = 1.3;
-      ctx.stroke();
-
-      ctx.fillStyle = online ? "#eef3ff" : "#93a0b8";
-      ctx.font = "600 11px Inter, sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(trunc(name, 14), p.x, p.y + rr + 15);
+      if (name !== "hub") drawNode(name, p, now, t);
     }
 
     // 消息粒子（带拖尾）
@@ -353,7 +572,6 @@
       const x = pt.x0 + (pt.x1 - pt.x0) * ease;
       const y = pt.y0 + (pt.y1 - pt.y0) * ease;
 
-      // 拖尾
       for (let k = 1; k <= 5; k++) {
         const tt = Math.max(0, pt.t - k * 0.022);
         const e2 = tt < 0.5 ? 2 * tt * tt : 1 - Math.pow(-2 * tt + 2, 2) / 2;
@@ -365,7 +583,6 @@
         ctx.fill();
       }
 
-      // 主体 + 辉光
       const glow = ctx.createRadialGradient(x, y, 0, x, y, pt.r * 3.2);
       glow.addColorStop(0, hexAlpha(pt.color, 0.85));
       glow.addColorStop(1, hexAlpha(pt.color, 0));
@@ -379,8 +596,69 @@
       ctx.fill();
     }
 
+    topo.lastFrame = now;
     requestAnimationFrame(draw);
   }
+
+  // ─────────────────────────── 节点点击弹窗（实时流最近 5 条） ───────────────────────────
+  let popupNode = null;
+
+  function renderPopup(name) {
+    const box = $("node-popup");
+    const msgs = state.feed
+      .filter((m) => m.from === name || m.to === name || m.to === "all")
+      .slice(0, 5);
+    let html = `<div class="popup-head"><b>${esc(name)}</b>
+      <span class="hint">${t("recentMsgs")}</span>
+      <button class="modal-close" type="button" id="popup-close">✕</button></div>`;
+    if (!msgs.length) {
+      html += `<p class="popup-empty">${t("noMessages")}</p>`;
+    } else {
+      for (const m of msgs) {
+        const kind = m.status === "broadcast" ? "broadcast" : (m.type || "chat");
+        html += `<div class="popup-item">
+          <div class="feed-head">
+            <span class="arrow">${esc(m.from)}</span><span>→</span><span class="arrow">${esc(m.to)}</span>
+            <span class="type-badge ${esc(kind)}">${esc(kind)}</span>
+            <span class="feed-time">${fmtTime(m.ts_ms)}</span>
+          </div>
+          <p class="feed-text">${esc(trunc(m.text, 100))}</p>
+        </div>`;
+      }
+    }
+    box.innerHTML = html;
+    $("popup-close").addEventListener("click", closePopup);
+  }
+
+  function closePopup() {
+    popupNode = null;
+    $("node-popup").hidden = true;
+  }
+
+  canvas.addEventListener("click", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    let hit = null;
+    for (const [name, p] of topo.pos) {
+      if (name === "hub") continue;
+      if (Math.hypot(p.x - x, p.y - y) <= 24) { hit = name; break; }
+    }
+    if (!hit) { closePopup(); return; }
+    popupNode = hit;
+    renderPopup(hit);
+    const box = $("node-popup");
+    box.hidden = false;
+    const p = topo.pos.get(hit);
+    const bw = box.offsetWidth, bh = box.offsetHeight;
+    let left = p.x + 26;
+    let top = p.y - bh / 2;
+    if (left + bw > topo.w - 8) left = p.x - bw - 26;
+    left = Math.max(8, left);
+    top = Math.max(8, Math.min(top, topo.h - bh - 8));
+    box.style.left = `${left}px`;
+    box.style.top = `${top}px`;
+  });
 
   // ─────────────────────────── 工具函数 ───────────────────────────
   function esc(s) {
@@ -395,7 +673,7 @@
   }
 
   function fmtNum(n) {
-    return Number(n || 0).toLocaleString("zh-CN");
+    return Number(n || 0).toLocaleString(lang === "zh" ? "zh-CN" : "en-US");
   }
 
   function fmtTime(ms) {
@@ -430,16 +708,37 @@
   for (const id of ["f-from", "f-type"]) $(id).addEventListener("change", renderHistory);
   $("f-text").addEventListener("input", () => renderHistory());
 
+  $("history-btn").addEventListener("click", openHistory);
+  $("history-close").addEventListener("click", closeHistory);
+  $("history-mask").addEventListener("click", (e) => {
+    if (e.target === $("history-mask")) closeHistory();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { closeHistory(); closePopup(); }
+  });
+
+  $("lang-btn").addEventListener("click", () => {
+    lang = lang === "zh" ? "en" : "zh";
+    localStorage.setItem("sf-lang", lang);
+    applyLang();
+    renderFromFilter();
+  });
+
+  $("color-btn").addEventListener("click", () => {
+    state.colorMode = state.colorMode === "mono" ? "multi" : "mono";
+    localStorage.setItem("sf-color", state.colorMode);
+    $("color-btn").textContent = state.colorMode === "mono" ? t("colorMulti") : t("colorMono");
+  });
+
   (async function boot() {
     resize();
-    // 模式：从 stats 侧的节点信息推断（首个非 local 节点），否则默认 plain。
     await refreshNodes();
     for (const n of state.nodes.values()) {
       if (n.mode === "tls" || n.mode === "plain") state.mode = n.mode;
     }
     await refreshStats();
     await fetchHistory(120);
-    renderFeed();
+    applyLang();
     connectSSE();
     requestAnimationFrame(draw);
     setInterval(() => { refreshStats(); refreshNodes(); }, 5000);

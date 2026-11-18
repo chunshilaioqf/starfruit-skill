@@ -6,3 +6,4 @@ node_modules/
 *.crt
 starfruit-data/
 .DS_Store
+starfruit-nodes.md

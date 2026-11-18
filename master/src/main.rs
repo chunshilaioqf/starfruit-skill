@@ -7,17 +7,35 @@
 mod agent;
 mod auth;
 mod hub;
+mod nodesdoc;
+mod paths;
 mod protocol;
+mod setup;
 mod team;
 mod tls;
+mod update;
 mod web;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use auth::TokenAuth;
 use protocol::{Deploy, Mode, State};
 use team::{JoinCtx, Team};
+
+/// 记录哪些参数来自命令行（setup.json 只回填未显式指定的项）。
+#[derive(Default)]
+struct Explicit {
+    deploy: bool,
+    mode: bool,
+    hub_addr: bool,
+    web_addr: bool,
+    jwt_ttl: bool,
+    require_jwt: bool,
+    team: bool,
+    nodes_doc: bool,
+}
 
 struct Config {
     deploy: Deploy,
@@ -37,8 +55,13 @@ struct Config {
     issue_token: Option<String>,
     team: Option<PathBuf>,
     init_team: Option<PathBuf>,
+    nodes_doc: Option<String>,
+    tunnel_url: Option<String>,
+    setup: bool,
+    no_setup: bool,
     daemon: bool,
     daemon_child: bool,
+    explicit: Explicit,
 }
 
 /// 所有模式允许的最小监听端口（默认端口为 10001，被占用则 +1）。
@@ -66,7 +89,12 @@ const HELP: &str = r#"starfruit-master —— 多节点 WS 协同主节点（管
   --team <team.json>    加载工作团队定义：为主节点生成每位成员"加入团队"的完整提示词
                         （终端可复制 + 落盘 data-dir/team-prompts.md + 面板 /team 查看）
   --init-team <path>    写出工作团队配置模板到 <path> 并退出（用户填写后用 --team 加载）
-  --data-dir <dir>      运行数据目录（日志/pid/历史/wake，默认 ./starfruit-data）
+  --setup               强制进入首次启动向导（部署模式/团队/令牌有效期交互选择）
+  --no-setup            跳过首次启动向导（脚本化启动用）
+  --nodes-doc <path>    starfruit-nodes.md 保存路径（缺省自动：docs/ > doc/ > 当前目录）
+  --tunnel-url <url>    公网 Cloudflare Tunnel 地址（缺省读 ~/.starfruit/tunnel/url，
+                        由 scripts/starfruit-tunnel.sh 独立维护，主节点不随其重启）
+  --data-dir <dir>      运行数据目录（默认 ~/.starfruit/master，用户级存储，跨平台一致）
   --manager-name <name> 内置管理者端点的注册名（默认 manager）
   --wake-cmd <shell>    wake 唤醒钩子：命令（环境变量 SF_FROM/SF_TO/SF_TEXT/SF_TS）
   --wake-url <url>      wake 唤醒钩子：HTTP POST JSON
@@ -74,16 +102,26 @@ const HELP: &str = r#"starfruit-master —— 多节点 WS 协同主节点（管
   --daemon              后台运行（脱离终端，日志写入 data-dir/starfruit-master.log）
   -h, --help            显示帮助
 
+首次启动: data-dir 无 setup.json 且 stdin 为终端时自动进入向导：
+  选择部署模式 → 创建工作团队（名称唯一）→ 选择令牌有效期 → 签发令牌并启动；
+  会话输出地址端口/团队成员/令牌，并生成 starfruit-nodes.md（自动加入 .gitignore，
+  节点信息变动时自动更新）。选择持久化 setup.json，之后启动自动复用。
+
 监听与安全规则（务必遵守）:
   · 端口规则：所有模式默认 10001（面板 10002），且必须 ≥ 10001；被占用则自动 +1。
   · 本机模式(local)  ：只监听 127.0.0.1（默认，最安全）；tls / jwt 可选。
   · 局域网模式(lan)  ：监听本机局域网 IP（如 192.168.x.x），禁止监听 0.0.0.0；tls / jwt 可选。
   · 公网模式(public) ：必须指定具体 IP（禁止 0.0.0.0），必须 --mode tls 且强制 jwt；
                        配合 Cloudflare Tunnel 服务时监听 127.0.0.1 作为隧道指向即可。
+  · 节点名称全网唯一：创建团队与节点登录均校验，重名在线连接被拒绝（name_conflict）。
 
 JWT 令牌（公网模式强制，local/lan 可选）: 令牌只能由主节点签发，所有子节点必须携带校验。
   · 签发：starfruit-master --issue-token <节点名> [--jwt-secret <s>] [--jwt-ttl <secs>]
   · 使用：子节点以 --token <令牌> 启动（Rust/Python/Node.js 三种客户端均支持）
+
+更新检查: 启动时每周最多一次比对线上 CHANGELOG.md（仓库
+  https://github.com/chunshilaioqf/starfruit-skill）；有更新会提醒，
+  更新用 scripts/starfruit-update.sh（含数据迁移检查）。
 
 模式不匹配（对方加密方式不对）时会向对方报错后断开（见 docs/protocol.md §2.1）。
 "#;
@@ -215,7 +253,15 @@ fn join_ctx(cfg: &Config, mode: Mode, hub_addr: &str, jwt_required: bool) -> Joi
 }
 
 /// 启动成功后打印的会话说明：主节点信息 + 子节点加入方式 + 部署/监听规则。
-fn print_banner(cfg: &Config, hub_addr: &str, web_addr: &str, jwt_required: bool) {
+fn print_banner(
+    cfg: &Config,
+    hub_addr: &str,
+    web_addr: &str,
+    jwt_required: bool,
+    tunnel: Option<&str>,
+    doc_path: &std::path::Path,
+    tokens: &HashMap<String, String>,
+) {
     let scheme = if cfg.mode == Mode::Tls { "wss" } else { "ws" };
     let web_scheme = if cfg.mode == Mode::Tls { "https" } else { "http" };
     let mode = cfg.mode.as_str();
@@ -237,7 +283,21 @@ fn print_banner(cfg: &Config, hub_addr: &str, web_addr: &str, jwt_required: bool
     eprintln!("  JWT 校验   : {jwt_desc}");
     eprintln!("  消息枢纽   : {server}");
     eprintln!("  只读面板   : {web_scheme}://{web_addr}");
+    if let Some(url) = tunnel {
+        eprintln!("  公网地址   : {url}（Cloudflare Tunnel 独立后台运行，主节点重启不影响）");
+    }
     eprintln!("  数据目录   : {}", cfg.data_dir.display());
+    eprintln!("  节点文档   : {}（节点信息变动时自动更新）", doc_path.display());
+    eprintln!("  项目仓库   : {}", update::REPO_URL);
+    if !tokens.is_empty() {
+        eprintln!();
+        eprintln!("  团队成员令牌（本次启动签发，有效期 {} 秒；已写入节点文档与 tokens.json）：", cfg.jwt_ttl);
+        let mut names: Vec<&String> = tokens.keys().collect();
+        names.sort();
+        for name in names {
+            eprintln!("    {name} : {}", tokens[name]);
+        }
+    }
     eprintln!();
     eprintln!("  其它执行节点加入方式（任选一种客户端，功能等价）：");
     eprintln!("    Rust    : starfruit-node    --name <唯一名> --mode {mode} --server {server}{token_hint}");
@@ -245,7 +305,7 @@ fn print_banner(cfg: &Config, hub_addr: &str, web_addr: &str, jwt_required: bool
     eprintln!("    Node.js : starfruit-node.js --name <唯一名> --mode {mode} --server {server}{token_hint}");
     eprintln!("  · 客户端用哪种实现由 agent 按所在机器环境决定：有 Rust 工具链用 Rust 版；");
     eprintln!("    仅有 Python 用 Python 版；仅有 Node 用 Node.js 版。三者功能等价。");
-    eprintln!("  · --name 全网唯一（同名重连顶掉旧连接）；--mode 必须与主节点一致，否则被报错断开。");
+    eprintln!("  · --name 全网唯一（重名在线连接被拒绝 name_conflict）；--mode 必须与主节点一致。");
     if jwt_required {
         eprintln!("  · 本主节点已强制 JWT 校验：先执行 `starfruit-master --issue-token <节点名> --data-dir {}`", cfg.data_dir.display());
         eprintln!("    签发令牌，子节点启动时须加 --token <令牌>，否则将被拒绝（unauthorized）。");
@@ -268,7 +328,7 @@ fn parse_args() -> Config {
         web_addr: "127.0.0.1:10002".into(),
         cert: None,
         key: None,
-        data_dir: PathBuf::from("starfruit-data"),
+        data_dir: paths::default_master_data_dir(),
         manager_name: "manager".into(),
         wake_cmd: None,
         wake_url: None,
@@ -279,8 +339,13 @@ fn parse_args() -> Config {
         issue_token: None,
         team: None,
         init_team: None,
+        nodes_doc: None,
+        tunnel_url: None,
+        setup: false,
+        no_setup: false,
         daemon: false,
         daemon_child: false,
+        explicit: Explicit::default(),
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -293,23 +358,45 @@ fn parse_args() -> Config {
                 cfg.deploy = Deploy::parse(&v).unwrap_or_else(|| {
                     panic!("--deploy 只能是 local|lan|public，收到 {v}")
                 });
+                cfg.explicit.deploy = true;
             }
             "--mode" => {
                 let v = val("--mode");
                 cfg.mode = Mode::parse(&v).unwrap_or_else(|| panic!("--mode 只能是 plain|tls，收到 {v}"));
+                cfg.explicit.mode = true;
             }
-            "--hub-addr" => cfg.hub_addr = val("--hub-addr"),
-            "--web-addr" => cfg.web_addr = val("--web-addr"),
+            "--hub-addr" => {
+                cfg.hub_addr = val("--hub-addr");
+                cfg.explicit.hub_addr = true;
+            }
+            "--web-addr" => {
+                cfg.web_addr = val("--web-addr");
+                cfg.explicit.web_addr = true;
+            }
             "--cert" => cfg.cert = Some(PathBuf::from(val("--cert"))),
             "--key" => cfg.key = Some(PathBuf::from(val("--key"))),
             "--jwt-secret" => cfg.jwt_secret = Some(val("--jwt-secret")),
             "--jwt-ttl" => {
-                cfg.jwt_ttl = val("--jwt-ttl").parse().expect("--jwt-ttl 需要整数秒")
+                cfg.jwt_ttl = val("--jwt-ttl").parse().expect("--jwt-ttl 需要整数秒");
+                cfg.explicit.jwt_ttl = true;
             }
-            "--require-jwt" => cfg.require_jwt = true,
+            "--require-jwt" => {
+                cfg.require_jwt = true;
+                cfg.explicit.require_jwt = true;
+            }
             "--issue-token" => cfg.issue_token = Some(val("--issue-token")),
-            "--team" => cfg.team = Some(PathBuf::from(val("--team"))),
+            "--team" => {
+                cfg.team = Some(PathBuf::from(val("--team")));
+                cfg.explicit.team = true;
+            }
             "--init-team" => cfg.init_team = Some(PathBuf::from(val("--init-team"))),
+            "--nodes-doc" => {
+                cfg.nodes_doc = Some(val("--nodes-doc"));
+                cfg.explicit.nodes_doc = true;
+            }
+            "--tunnel-url" => cfg.tunnel_url = Some(val("--tunnel-url")),
+            "--setup" => cfg.setup = true,
+            "--no-setup" => cfg.no_setup = true,
             "--data-dir" => cfg.data_dir = PathBuf::from(val("--data-dir")),
             "--manager-name" => cfg.manager_name = val("--manager-name"),
             "--wake-cmd" => cfg.wake_cmd = Some(val("--wake-cmd")),
@@ -326,12 +413,35 @@ fn parse_args() -> Config {
             other => panic!("未知参数: {other}（--help 查看用法）"),
         }
     }
-    // 监听规则：禁止通配地址（0.0.0.0 / ::）+ 端口下限（≥ 10001）。
-    validate_bind("--hub-addr", &cfg.hub_addr);
-    validate_bind("--web-addr", &cfg.web_addr);
-    // 部署模式规则：地址范围 + tls 要求。
-    validate_deploy(&cfg);
     cfg
+}
+
+/// 用 setup.json 的选择回填未显式指定的命令行参数。
+fn apply_setup(cfg: &mut Config, s: &setup::Setup) {
+    if !cfg.explicit.deploy {
+        cfg.deploy = Deploy::parse(&s.deploy).unwrap_or(Deploy::Local);
+    }
+    if !cfg.explicit.mode {
+        cfg.mode = Mode::parse(&s.mode).unwrap_or(Mode::Plain);
+    }
+    if !cfg.explicit.hub_addr {
+        cfg.hub_addr = s.hub_addr.clone();
+    }
+    if !cfg.explicit.web_addr {
+        cfg.web_addr = s.web_addr.clone();
+    }
+    if !cfg.explicit.jwt_ttl {
+        cfg.jwt_ttl = s.jwt_ttl;
+    }
+    if !cfg.explicit.require_jwt && s.jwt_enabled {
+        cfg.require_jwt = true;
+    }
+    if !cfg.explicit.team && s.team.is_some() {
+        cfg.team = Some(cfg.data_dir.join("team.json"));
+    }
+    if !cfg.explicit.nodes_doc {
+        cfg.nodes_doc = s.nodes_doc.clone();
+    }
 }
 
 /// 后台化：以 setsid 方式重新拉起自身，stdio 重定向到日志文件，父进程退出。
@@ -366,7 +476,8 @@ fn daemonize(cfg: &Config) {
 }
 
 fn main() {
-    let cfg = parse_args();
+    use std::io::IsTerminal;
+    let mut cfg = parse_args();
 
     // --init-team：写出团队配置模板后退出（不启动服务）。
     if let Some(path) = cfg.init_team.clone() {
@@ -383,7 +494,35 @@ fn main() {
         return;
     }
 
+    // 首次启动向导：--setup 强制；或首启（无 setup.json）且 stdin 为终端。
+    // --issue-token / --no-setup / daemon 子进程不进入向导。
+    let first_run = !cfg.data_dir.join("setup.json").exists();
+    let want_wizard = cfg.issue_token.is_none()
+        && !cfg.no_setup
+        && !cfg.daemon_child
+        && (cfg.setup || (first_run && std::io::stdin().is_terminal()));
+    if want_wizard {
+        std::fs::create_dir_all(&cfg.data_dir).expect("创建 data-dir 失败");
+        let s = setup::run_wizard(&cfg.manager_name);
+        if let Err(e) = s.save(&cfg.data_dir) {
+            eprintln!("[fatal] {e}");
+            std::process::exit(1);
+        }
+        apply_setup(&mut cfg, &s);
+    } else if let Some(s) = setup::Setup::load(&cfg.data_dir) {
+        eprintln!("[setup] 已加载首启配置 setup.json（deploy={} mode={}）", s.deploy, s.mode);
+        apply_setup(&mut cfg, &s);
+    }
+
+    // 监听规则：禁止通配地址（0.0.0.0 / ::）+ 端口下限（≥ 10001）+ 部署模式规则。
+    validate_bind("--hub-addr", &cfg.hub_addr);
+    validate_bind("--web-addr", &cfg.web_addr);
+    validate_deploy(&cfg);
+
     std::fs::create_dir_all(&cfg.data_dir).expect("创建 data-dir 失败");
+
+    // 数据迁移检查（版本标记对比；当前版本间无结构变更）。
+    update::check_migration(&cfg.data_dir);
 
     // JWT 校验器：公网模式强制；local/lan 需 --require-jwt；--issue-token 亦需构造（签发用）。
     let need_jwt = jwt_required(&cfg) || cfg.issue_token.is_some();
@@ -399,10 +538,14 @@ fn main() {
         None
     };
 
-    // --issue-token：签发令牌后打印并退出（不启动服务）。
+    // --issue-token：签发令牌后打印并退出（不启动服务）；并入 tokens.json 供节点文档引用。
     if let Some(name) = cfg.issue_token.clone() {
         let a = auth.as_ref().expect("issue-token 需要 JWT 校验器");
-        println!("{}", a.issue(&name));
+        let token = a.issue(&name);
+        println!("{token}");
+        let mut m = HashMap::new();
+        m.insert(name.clone(), token);
+        nodesdoc::save_tokens(&cfg.data_dir, &m);
         eprintln!(
             "[jwt] 已为节点 {name} 签发令牌（有效期 {} 秒，仅本主节点认可）",
             a.ttl()
@@ -510,10 +653,16 @@ async fn run(
         hub_addr
     );
 
-    // 工作团队：加载定义 → 生成每位成员"加入团队"提示词视图。
+    // 工作团队：加载定义（成员名唯一已在解析时校验；不得与管理者名冲突）。
     let team_def = match &cfg.team {
         Some(path) => match Team::load(path) {
-            Ok(t) => Some(t),
+            Ok(t) => {
+                if let Some(m) = t.members.iter().find(|m| m.name == cfg.manager_name) {
+                    eprintln!("[fatal] 团队成员 {} 与主节点管理者名冲突（节点名称不可重复）。", m.name);
+                    std::process::exit(1);
+                }
+                Some(t)
+            }
             Err(e) => {
                 eprintln!("[fatal] {e}");
                 std::process::exit(1);
@@ -521,9 +670,20 @@ async fn run(
         },
         None => None,
     };
-    let team_view = team_def.as_ref().map(|t| {
-        Arc::new(t.view(&join_ctx(&cfg, mode, &hub_addr, jwt)))
-    });
+
+    // 团队令牌：每次启动为全体会员重新签发（保证有效期充足），落盘 tokens.json（0600）。
+    let mut tokens: HashMap<String, String> = HashMap::new();
+    if jwt {
+        if let (Some(t), Some(a)) = (&team_def, &auth) {
+            for m in &t.members {
+                tokens.insert(m.name.clone(), a.issue(&m.name));
+            }
+            nodesdoc::save_tokens(&cfg.data_dir, &tokens);
+        }
+    }
+
+    let jctx = join_ctx(&cfg, mode, &hub_addr, jwt);
+    let team_view = team_def.as_ref().map(|t| Arc::new(t.view_with_tokens(&jctx, &tokens)));
 
     // Web 只读面板（端口占用自动 +1）。
     let (web_listener, web_addr) = match bind_with_retry(&cfg.web_addr).await {
@@ -553,6 +713,48 @@ async fn run(
         },
     ));
 
+    // 节点接入文档：生成 + 动态更新（节点上下线/令牌/Tunnel 变化）。
+    let scheme = if mode == Mode::Tls { "wss" } else { "ws" };
+    let web_scheme = if mode == Mode::Tls { "https" } else { "http" };
+    let doc_path = nodesdoc::resolve_doc_path(cfg.nodes_doc.as_deref());
+    nodesdoc::ensure_gitignore();
+    let doc_ctx = nodesdoc::DocCtx {
+        doc_path: doc_path.clone(),
+        manager_name: cfg.manager_name.clone(),
+        deploy: cfg.deploy.as_str().to_string(),
+        mode: mode.as_str().to_string(),
+        server: format!("{scheme}://{hub_addr}"),
+        web: format!("{web_scheme}://{web_addr}"),
+        data_dir: cfg.data_dir.display().to_string(),
+        team: team_def.clone(),
+        jwt,
+        tunnel_url: cfg.tunnel_url.clone(),
+    };
+    nodesdoc::spawn_updater(state.clone(), doc_ctx);
+
+    // 每周更新检查（后台阻塞任务，不拖慢启动）。
+    {
+        let state = state.clone();
+        let data_dir = cfg.data_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Some(v) = update::check_weekly(&data_dir) {
+                if v["update_available"].as_bool().unwrap_or(false) {
+                    eprintln!(
+                        "[update] 发现新版本 {}（当前 {}）：请运行 scripts/starfruit-update.sh 完成更新（含数据迁移检查）。仓库: {}",
+                        v["latest_version"].as_str().unwrap_or("?"),
+                        update::CURRENT_VERSION,
+                        update::REPO_URL
+                    );
+                }
+                state.emit("update", v.clone());
+                let state2 = state.clone();
+                tokio::spawn(async move {
+                    *state2.update.lock().await = Some(v);
+                });
+            }
+        });
+    }
+
     // 明文监听非本机地址时给出提示：公网务必用 Cloudflare Tunnel + tls + jwt。
     if mode == Mode::Plain && !is_loopback_host(host_of(&hub_addr)) {
         eprintln!(
@@ -562,17 +764,21 @@ async fn run(
         );
     }
 
-    // 启动成功说明（会话提示）。
-    print_banner(&cfg, &hub_addr, &web_addr, jwt);
+    // 启动成功说明（会话提示）：地址端口 / 团队成员与令牌 / 节点文档路径。
+    let tunnel = cfg
+        .tunnel_url
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(paths::read_tunnel_url);
+    print_banner(&cfg, &hub_addr, &web_addr, jwt, tunnel.as_deref(), &doc_path, &tokens);
 
-    // 工作团队：已配置则打印提示词并落盘；未配置则提示用户可选配置。
+    // 工作团队：已配置则打印提示词（含真实令牌）并落盘；未配置则提示用户可选配置。
     match (&team_def, &team_view) {
         (Some(t), Some(view)) => {
             team::print_prompts(t, &view.prompts);
             let path = team::prompts_path(&cfg.data_dir);
             match std::fs::write(&path, &view.markdown) {
                 Ok(_) => {
-                    let web_scheme = if mode == Mode::Tls { "https" } else { "http" };
                     eprintln!(
                         "[team] 提示词已落盘 {}（面板查看: {web_scheme}://{web_addr}/team）",
                         path.display()

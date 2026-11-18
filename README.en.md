@@ -64,6 +64,14 @@ a read-only web dashboard (animated message flow), an offline queue, message his
 | **Hooks-driven passive wake** | Reuse the agent's hook mechanism: `scripts/starfruit-wake-bridge.sh` tails `wake.log` and wakes the session to continue working on a master task |
 | **Daemon mode + keep-alive** | `--daemon` detaches from the terminal and writes a pidfile plus logs; `scripts/starfruit-keepalive.sh` (or systemd) restarts the process after an abnormal exit |
 | **Work teams (team)** | With `--team team.json` the master generates a full "join the team" prompt per member: copy from the session, from `team-prompts.md`, or one-click from the `/team` dashboard page |
+| **User-level data dir** | Same scheme on every OS: `~/.starfruit` (master `master/`, workers `nodes/<name>/`); override with `--data-dir` |
+| **First-run wizard + nodes doc** | Interactive first-run choices (deploy / mode / JWT TTL / team); generates and auto-updates `starfruit-nodes.md` (addresses / members / tokens / join prompts), auto-added to `.gitignore` |
+| **Globally-unique names** | Enforced at creation and at login; an online duplicate is rejected with `name_conflict` (client exit code 4, never takes over the old connection) |
+| **Independent Cloudflare Tunnel** | `scripts/starfruit-tunnel.sh` runs in the background on its own; restarting the master does not change the public URL — only explicit stop/restart does |
+| **Auto passive-wake setup** | `scripts/starfruit-wake-setup.sh` detects the local agent (Claude Code hooks) and installs a resident wake bridge (idempotent) |
+| **Optional cucumber integration** | `scripts/starfruit-cucumber.sh` registers nodes into the cucumber process manager (requires user consent; absent cucumber changes nothing) |
+| **Weekly update check** | Master start + worker connect compare the online CHANGELOG; a newer version triggers a session reminder + dashboard banner; `scripts/starfruit-update.sh` includes a data-migration check |
+| **Bilingual dashboard** | Chinese / English toggle (default Chinese); history modal, gear/breathing topology animation, mono/multi color, node click popup, GitHub link |
 | **No extra dependencies** | Workers use only their standard library (hand-rolled RFC6455); the hub embeds its static assets into the binary |
 | **Deploy modes** | `--deploy local\|lan\|public`: `local` binds loopback only (safest), `lan` binds a specific LAN IP, `public` requires a concrete IP plus `--mode tls` and JWT; wildcard `0.0.0.0` is always rejected |
 | **JWT tokens** | Master-issued HS256 tokens; workers must present `--token <token>`; the master verifies signature / expiry / owner and replies `unauthorized` then disconnects on failure |
@@ -108,8 +116,9 @@ flowchart TB
 | **Master (manager / hub)** | exactly one | Message routing, offline queue, history, TLS endpoint, read-only web dashboard, wake dispatch, built-in manager endpoint |
 | **Worker** | any | Connects, registers, takes tasks, executes and reports; implemented in any language by an agent, script or tool |
 
-> Node names are **unique network-wide**: reconnecting with the same name **evicts the old connection**
-> (which receives a Close frame).
+> Node names are **unique network-wide**: registering a name that is already **online** is rejected
+> with `name_conflict` and the client exits with code 4 (the old connection is **not** evicted).
+> Once the old connection drops, the name can be registered again.
 
 ---
 
@@ -262,7 +271,7 @@ open http://127.0.0.1:10002     # https:// under tls mode; the browser must trus
 | `--issue-token <node>` | none | Issue a JWT token for the named node, print it and exit (does not start the service) |
 | `--team <team.json>` | none | Load a work-team definition and generate a full "join the team" prompt for every member (session + `data-dir/team-prompts.md` + dashboard `/team`) |
 | `--init-team <path>` | none | Write a work-team template to `<path>` and exit (edit it, then load it with `--team`) |
-| `--data-dir <dir>` | `./starfruit-data` | Runtime data directory (logs / pid / history / wake) |
+| `--data-dir <dir>` | `~/.starfruit/master` | Runtime data directory (logs / pid / history / wake / setup.json / tokens.json) |
 | `--manager-name <name>` | `manager` | Registration name of the built-in manager endpoint |
 | `--wake-cmd <shell>` | none | Wake hook: run a command (`SF_FROM/SF_TO/SF_TEXT/SF_TS` injected) |
 | `--wake-url <url>` | none | Wake hook: HTTP POST JSON |
@@ -277,11 +286,11 @@ All three implementations share the same options:
 | Option | Default | Description |
 |---|---|---|
 | `--server <url>` | `ws://127.0.0.1:10001` | Master address (`ws://` or `wss://`; use the master's LAN IP / tunnel domain across machines) |
-| `--name <name>` | required | Node name, **unique network-wide** (reconnecting with the same name evicts the old connection) |
+| `--name <name>` | required | Node name, **unique network-wide** (an online duplicate is rejected with `name_conflict`, exit code 4) |
 | `--role <role>` | `worker` | Role label (`manager` / `worker`, display only) |
 | `--mode plain\|tls` | `plain` | **Must match the master**, otherwise the master reports an error and disconnects |
 | `--token <jwt>` | none | JWT token issued by the master (`--issue-token <this node's name>`); required whenever the master enforces JWT |
-| `--data-dir <dir>` | `./starfruit-data` | Runtime data directory (logs / pid / `wake.log`) |
+| `--data-dir <dir>` | `~/.starfruit/nodes/<name>` | Runtime data directory (logs / pid / `wake.log`) |
 | `--wake-cmd <sh>` | none | Wake hook: shell command (`SF_FROM/SF_TO/SF_TEXT/SF_TS` injected) |
 | `--wake-url <url>` | none | Wake hook: HTTP POST JSON `{"from","to","text","ts"}` |
 | `--ca-cert <path>` | none | TLS CA certificate (self-signed certs are trusted by default, which suits LAN use) |
@@ -451,10 +460,20 @@ Read-only endpoints: `GET /team`, `GET /api/team`, `GET /team-prompts.md`.
 ### Read-only web dashboard
 
 - URL: `http://127.0.0.1:10002` (`https://` in `tls` mode);
-- **No auth, read-only**: node topology (canvas particle animation), message flow, history
-  (paging / filtering) and stats;
-- Main endpoints: `GET /`, `GET /api/nodes`, `GET /api/messages?limit=&before=`, `GET /events` (SSE),
-  plus the work-team endpoints `GET /team`, `GET /api/team`, `GET /team-prompts.md`.
+- **No auth, read-only**: node topology (canvas animation), message flow, history and stats;
+- **Bilingual**: Chinese / English toggle in the top bar (default Chinese, persisted in localStorage);
+- **History modal**: opened by the button after the live-connection chip, 80vw×80vh (min 640×320),
+  paging / filtering;
+- **Topology animation**: working nodes spin a gear, idle nodes breathe, message highlights enlarge
+  and decay over 5s; the HUB uses the SVG logo (fast spin 5s on a new message, blink 10s on node join,
+  red violent jitter 10s on node leave); nodes show in/out counts and clicking one pops up its last 5
+  live messages ("None yet" if empty); a mono/multi color toggle sits at the right of the topology
+  title (multi = per-name hash HSL); each node shows its rotating first character (inverse background
+  mixed 75% toward white, white glow); 20% gray grid background;
+- **Update banner + GitHub link**: a top banner appears when a newer version is detected; the footer
+  carries the repository link and version;
+- Main endpoints: `GET /`, `GET /api/nodes`, `GET /api/messages?limit=&before=`, `GET /api/stats`,
+  `GET /events` (SSE), plus the work-team endpoints `GET /team`, `GET /api/team`, `GET /team-prompts.md`.
 
 ---
 
@@ -467,7 +486,7 @@ See [docs/protocol.md](docs/protocol.md) for the full starfruit protocol v2.
 - **Types**: `task / status / done / blocked / idle / notice / chat / wake`;
 - **Register**: first frame `{"action":"register","from":"<name>","role":"worker|manager","mode":"plain|tls","ver":2}`,
   plus an optional `"token":"<jwt>"` field whenever the master enforces JWT;
-- **Receipts**: `registered / sent / queued / queued_delivered / broadcast_ok / no_such_peer / bad_msg / warn / mode_mismatch / unauthorized`;
+- **Receipts**: `registered / sent / queued / queued_delivered / broadcast_ok / no_such_peer / bad_msg / warn / mode_mismatch / unauthorized / name_conflict`;
 - **Offline queue**: messages for an offline peer are queued (200 FIFO entries per peer) and delivered
   after it registers; broadcasts are not replayed.
 

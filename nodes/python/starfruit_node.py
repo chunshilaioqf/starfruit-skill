@@ -30,10 +30,66 @@ import urllib.request
 RECV_MAX = 2 * 1024 * 1024
 BACKOFF = [2, 4, 8, 16, 30]
 
+CURRENT_VERSION = "0.10.0"
+REPO_URL = "https://github.com/chunshilaioqf/starfruit-skill"
+CHANGELOG_URL = "https://raw.githubusercontent.com/chunshilaioqf/starfruit-skill/main/CHANGELOG.md"
+UPDATE_CHECK_INTERVAL_MS = 7 * 86400 * 1000
+
 
 def log(msg):
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] [starfruit-node] {msg}", flush=True)
+
+
+def user_data_root():
+    home = os.environ.get("HOME") or os.environ.get("USERPROFILE") or "."
+    return os.path.join(home, ".starfruit")
+
+
+# ─────────────────────────── 每周更新检查 ───────────────────────────
+
+def parse_latest_version(changelog):
+    """首个 `## [x.y.z]`（跳过 Unreleased）。"""
+    for line in changelog.splitlines():
+        line = line.strip()
+        if line.startswith("## [") and "]" in line:
+            ver = line[4:].split("]", 1)[0]
+            if ver[:1].isdigit():
+                return ver
+    return None
+
+
+def version_newer(latest, current):
+    def parts(s):
+        return [int(p) if p.strip().isdigit() else 0 for p in s.split(".")]
+    return parts(latest) > parts(current)
+
+
+def check_update_weekly(data_dir):
+    """每周一次比对线上 CHANGELOG；失败静默（不推进时间戳，下次连接再试）。"""
+    marker = os.path.join(data_dir, "update-check.json")
+    cached = {}
+    try:
+        with open(marker, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        pass
+    now = int(time.time() * 1000)
+    latest = cached.get("latest")
+    if now - int(cached.get("ts_ms", 0)) >= UPDATE_CHECK_INTERVAL_MS:
+        try:
+            with urllib.request.urlopen(CHANGELOG_URL, timeout=8) as resp:
+                body = resp.read().decode("utf-8", "replace")
+            v = parse_latest_version(body)
+            if v:
+                latest = v
+                with open(marker, "w", encoding="utf-8") as f:
+                    json.dump({"ts_ms": now, "latest": latest}, f)
+        except Exception:  # noqa: BLE001 —— 更新检查失败不影响节点运行
+            pass
+    if latest and version_newer(latest, CURRENT_VERSION):
+        log(f"发现新版本 {latest}（当前 {CURRENT_VERSION}）：请提醒用户更新 —— "
+            f"{REPO_URL}（scripts/starfruit-update.sh，含数据迁移检查）")
 
 
 # ─────────────────────────── WebSocket 客户端（RFC6455 最小实现） ───────────────────────────
@@ -248,6 +304,7 @@ class Node:
         host, _, port = u.partition(":")
         port = int(port or ("443" if tls else "80"))
         log(f"连接 {self.args.server}（mode={self.mode}）")
+        check_update_weekly(self.data_dir)
         self.ws = WsClient(host, port, "/", tls=tls, ca_cert=self.args.ca_cert)
 
         self.send_json({
@@ -314,6 +371,10 @@ class Node:
             if code == "unauthorized":
                 log(f"JWT 令牌校验失败（服务端报错）：{v.get('detail')}")
                 sys.exit(3)
+            if code == "name_conflict":
+                log(f"节点名冲突（服务端报错）：{v.get('detail')}")
+                log("节点名称全网唯一：请更换 --name，或待同名旧连接断开后重试")
+                sys.exit(4)
             log(f"系统回执 {code}: {v.get('detail', '')}")
             return
 
@@ -347,19 +408,22 @@ def main():
     ap = argparse.ArgumentParser(description="starfruit 子节点（Python 版）")
     ap.add_argument("--server", default="ws://127.0.0.1:10001",
                     help="主节点地址 ws:// 或 wss://（默认 ws://127.0.0.1:10001）")
-    ap.add_argument("--name", required=True, help="节点名（全网唯一）")
+    ap.add_argument("--name", required=True, help="节点名（全网唯一；重名在线连接会被拒绝 name_conflict）")
     ap.add_argument("--role", default="worker", help="角色标签（默认 worker）")
     ap.add_argument("--mode", default="plain", choices=["plain", "tls"],
                     help="加密模式，必须与主节点一致（默认 plain）")
     ap.add_argument("--token", default=None,
                     help="JWT 令牌（主节点 --issue-token <本节点名> 签发；公网模式必填）")
-    ap.add_argument("--data-dir", default="starfruit-data", help="运行数据目录")
+    ap.add_argument("--data-dir", default=None,
+                    help="运行数据目录（默认 ~/.starfruit/nodes/<name>）")
     ap.add_argument("--wake-cmd", default=None, help="wake 唤醒钩子：shell 命令")
     ap.add_argument("--wake-url", default=None, help="wake 唤醒钩子：HTTP POST URL")
     ap.add_argument("--ca-cert", default=None, help="TLS CA 证书（缺省信任自签）")
     ap.add_argument("--daemon", action="store_true", help="后台运行")
     args = ap.parse_args()
 
+    if args.data_dir is None:
+        args.data_dir = os.path.join(user_data_root(), "nodes", args.name)
     if args.daemon:
         daemonize(os.path.abspath(args.data_dir), args.name)
     log(f"启动: name={args.name} mode={args.mode} server={args.server}")

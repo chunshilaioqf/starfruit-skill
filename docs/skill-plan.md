@@ -68,6 +68,12 @@ starfruit/                        # SKILL 根目录
 | **前端无构建步骤** | 原生 HTML/JS/CSS 单目录，`include_str!` 嵌入二进制，用户零前端工具链负担 |
 | **Python/Node 无第三方依赖** | 局域网离线可用；RFC6455 客户端按协议最小实现（掩码 `mask[i % 4]` 教训已记录） |
 | **主节点单二进制** | hub + 面板 + TLS + daemon 一体，`cargo install --path .` 即用 |
+| **用户级数据目录 `~/.starfruit`** | 跨 OS 统一（HOME/USERPROFILE），避免散落 cwd；主节点 `master/`、子节点 `nodes/<name>/`；`--data-dir` 可覆盖 |
+| **首启向导 + setup.json** | 交互选择持久化，之后启动自动复用；`--no-setup` 供脚本化；daemon 子进程不进向导 |
+| **节点文档含令牌 → gitignore** | `starfruit-nodes.md` 含 JWT 令牌，自动加入 `.gitignore` 并在文首警示勿提交/外传；令牌另存 `tokens.json`（0600） |
+| **名称唯一拒绝而非顶替** | 在线重名回执 `name_conflict`（退出码 4），保护在途连接不被意外顶掉；离线后同名可重注册 |
+| **Tunnel 与主节点解耦** | 独立脚本 + 看门狗 + `~/.starfruit/tunnel/url`；主节点只读 url 不管理生命周期，重启不换公网地址 |
+| **更新检查节流 7 天** | 统一 `update-check.json`（`ts_ms/latest`）主节点与三客户端共享；失败不推进时间戳；只提醒不自动更新 |
 
 ## 5. agent 使用流程（SKILL 落地视角）
 

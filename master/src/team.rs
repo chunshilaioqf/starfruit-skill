@@ -71,12 +71,16 @@ impl Team {
             return Err("团队成员（members）不能为空".to_string());
         }
         let mut members = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for (i, m) in arr.iter().enumerate() {
             let name = m
                 .get("name")
                 .and_then(|n| n.as_str())
                 .map(str::to_string)
                 .ok_or_else(|| format!("第 {} 个成员缺少 name", i + 1))?;
+            if !seen.insert(name.clone()) {
+                return Err(format!("成员名重复：{name}（节点名称不可重复）"));
+            }
             let role = m
                 .get("role")
                 .and_then(|r| r.as_str())
@@ -105,24 +109,27 @@ impl Team {
 "#
     }
 
-    /// 生成每位成员"加入团队"的完整提示词：`(成员名, 提示词)`。
-    pub fn join_prompts(&self, ctx: &JoinCtx) -> Vec<(String, String)> {
-        self.members
-            .iter()
-            .map(|m| (m.name.clone(), self.prompt_of(m, ctx)))
-            .collect()
+    /// 单个成员的加入提示词（携带已签发的真实令牌，复制即可接入）。
+    pub fn prompt_with_token(&self, m: &Member, ctx: &JoinCtx, token: Option<&String>) -> String {
+        self.prompt_of(m, ctx, token.map(|s| s.as_str()))
     }
 
     /// 单个成员的加入提示词。
-    fn prompt_of(&self, m: &Member, ctx: &JoinCtx) -> String {
-        let token_flag = if ctx.token_required { " --token <令牌>" } else { "" };
-        let token_step = if ctx.token_required {
-            format!(
-                "   JWT 令牌（--token）：由主节点签发 —— starfruit-master --issue-token {} --data-dir {}\n",
-                m.name, ctx.data_dir
-            )
-        } else {
-            String::new()
+    fn prompt_of(&self, m: &Member, ctx: &JoinCtx, token: Option<&str>) -> String {
+        let node_data_dir = format!("~/.starfruit/nodes/{}", m.name);
+        let (token_flag, token_step) = match token {
+            Some(t) => (
+                format!(" --token {t}"),
+                format!("   JWT 令牌（已签发，直接使用）：{t}\n"),
+            ),
+            None if ctx.token_required => (
+                " --token <令牌>".to_string(),
+                format!(
+                    "   JWT 令牌（--token）：由主节点签发 —— starfruit-master --issue-token {} --data-dir {}\n",
+                    m.name, ctx.data_dir
+                ),
+            ),
+            None => (String::new(), String::new()),
         };
         let note_line = if m.note.is_empty() {
             String::new()
@@ -134,31 +141,34 @@ impl Team {
 请让子节点长期后台运行并接入主节点，然后等待主节点派发任务。
 
 【你的身份】
-- 节点名（--name，全网唯一）：{name}
+- 节点名（--name，全网唯一，重名会被拒绝 name_conflict）：{name}
 - 角色：{role}
 - 主节点（--server）：{server}
 - 加密模式（--mode，必须与主节点一致）：{mode}
 {token_step}
 【1. 脱离会话后台启动（必须）】
 按所在机器环境任选一种客户端实现（三者功能等价，协议相同）：
-  Rust    : ./nodes/rust/target/release/starfruit-node --name {name} --mode {mode} --server {server} --data-dir {data_dir} --daemon{token_flag}
-  Python3 : python3 nodes/python/starfruit_node.py --name {name} --mode {mode} --server {server} --data-dir {data_dir} --daemon{token_flag}
-  Node.js : node nodes/nodejs/starfruit-node.js --name {name} --mode {mode} --server {server} --data-dir {data_dir} --daemon{token_flag}
+  Rust    : ./nodes/rust/target/release/starfruit-node --name {name} --mode {mode} --server {server} --data-dir {node_data_dir} --daemon{token_flag}
+  Python3 : python3 nodes/python/starfruit_node.py --name {name} --mode {mode} --server {server} --data-dir {node_data_dir} --daemon{token_flag}
+  Node.js : node nodes/nodejs/starfruit-node.js --name {name} --mode {mode} --server {server} --data-dir {node_data_dir} --daemon{token_flag}
 进程必须以脱离本 agent 会话的方式运行（--daemon / nohup / systemd），
-会话结束或 agent 退出都不得导致节点退出。
+会话结束或 agent 退出都不得导致节点退出。数据统一存用户级目录 ~/.starfruit。
 
 【2. 保活】
 用 scripts/starfruit-keepalive.sh 监督该进程，或用 systemd（Restart=always）守护，
 异常退出自动重启，保证节点长期在线。
+（可选）若本机装有 cucumber（黄瓜）进程管理工具，可先征得用户同意，
+再用 scripts/starfruit-cucumber.sh add 把本节点注册进去统一管理。
 
-【3. 被动唤醒（复用 agent 的 hooks 机制）】
-配置唤醒钩子，把主节点的任务转成本会话的"继续工作"：
-  --wake-cmd '<你的 agent 唤醒命令>'   或   --wake-url <url>
-或以 scripts/starfruit-wake-bridge.sh 作为 agent hook 注册（tail <data-dir>/wake.log 被动接收）。
+【3. 被动唤醒（复用 agent 的 hooks 机制，必须配置）】
+运行 scripts/starfruit-wake-setup.sh {node_data_dir}/wake.log 自动对接当前 agent 工具：
+它会检测本机 agent（如 Claude Code hooks）并注册常驻唤醒桥；其余环境以
+STARFRUIT_WAKE_CMD='<你的 agent 唤醒命令>' 后台常驻 scripts/starfruit-wake-bridge.sh。
+也可直接把节点 --wake-cmd 指向你的唤醒入口（拉起/恢复会话的 CLI）。
 
 【4. 就绪上报】
 注册成功后（日志出现 registered），向 manager 上报 ready：
-  echo '{{"to":"manager","type":"status","text":"{name} ready"}}' >> {data_dir}/{name}.outbox.jsonl
+  echo '{{"to":"manager","type":"status","text":"{name} ready"}}' >> {node_data_dir}/{name}.outbox.jsonl
 
 请确认：节点已后台运行、保活已配置、唤醒钩子已就绪，然后开始待命。"#,
             team = self.name,
@@ -167,15 +177,23 @@ impl Team {
             note = note_line,
             server = ctx.server,
             mode = ctx.mode,
-            data_dir = ctx.data_dir,
+            node_data_dir = node_data_dir,
             token_step = token_step,
             token_flag = token_flag,
         )
     }
 
-    /// 构建面板/文件视图（JSON + Markdown + 独立 HTML 页）。
-    pub fn view(&self, ctx: &JoinCtx) -> TeamView {
-        let prompts = self.join_prompts(ctx);
+    /// 构建面板/文件视图（JSON + Markdown + 独立 HTML 页；携带已签发令牌）。
+    pub fn view_with_tokens(
+        &self,
+        ctx: &JoinCtx,
+        tokens: &std::collections::HashMap<String, String>,
+    ) -> TeamView {
+        let prompts: Vec<(String, String)> = self
+            .members
+            .iter()
+            .map(|m| (m.name.clone(), self.prompt_with_token(m, ctx, tokens.get(&m.name))))
+            .collect();
         let members_json: Vec<Value> = self
             .members
             .iter()
@@ -352,15 +370,19 @@ mod tests {
         let t = Team::from_value(&v).unwrap();
         assert_eq!(t.name, "squad");
         assert_eq!(t.members.len(), 2);
-        let prompts = t.join_prompts(&ctx());
+        let prompts: Vec<String> = t
+            .members
+            .iter()
+            .map(|m| t.prompt_with_token(m, &ctx(), None))
+            .collect();
         assert_eq!(prompts.len(), 2);
-        assert!(prompts[0].1.contains("--name a"));
-        assert!(prompts[1].1.contains("角色：ui"));
-        assert!(prompts[1].1.contains("备注：x"));
+        assert!(prompts[0].contains("--name a"));
+        assert!(prompts[1].contains("角色：ui"));
+        assert!(prompts[1].contains("备注：x"));
         // 提示词包含后台运行 / 保活 / hooks 被动唤醒三段要点。
-        assert!(prompts[0].1.contains("--daemon"));
-        assert!(prompts[0].1.contains("starfruit-keepalive.sh"));
-        assert!(prompts[0].1.contains("starfruit-wake-bridge.sh"));
+        assert!(prompts[0].contains("--daemon"));
+        assert!(prompts[0].contains("starfruit-keepalive.sh"));
+        assert!(prompts[0].contains("starfruit-wake-bridge.sh"));
     }
 
     #[test]
@@ -370,7 +392,7 @@ mod tests {
         let t = Team::from_value(&v).unwrap();
         let mut c = ctx();
         c.token_required = true;
-        let p = &t.join_prompts(&c)[0].1;
+        let p = t.prompt_with_token(&t.members[0], &c, None);
         assert!(p.contains("--token <令牌>"));
         assert!(p.contains("--issue-token a"));
     }
@@ -382,12 +404,38 @@ mod tests {
     }
 
     #[test]
+    fn 成员名重复应被拒绝() {
+        let v: Value = serde_json::from_str(
+            r#"{"team":"t","members":[{"name":"a"},{"name":"a"}]}"#,
+        )
+        .unwrap();
+        let err = Team::from_value(&v).unwrap_err();
+        assert!(err.contains("重复"));
+    }
+
+    #[test]
+    fn 携带真实令牌的提示词() {
+        let v: Value =
+            serde_json::from_str(r#"{"team":"t","members":[{"name":"a"}]}"#).unwrap();
+        let t = Team::from_value(&v).unwrap();
+        let mut c = ctx();
+        c.token_required = true;
+        let token = "tok-xyz".to_string();
+        let p = t.prompt_with_token(&t.members[0], &c, Some(&token));
+        assert!(p.contains("--token tok-xyz"));
+        assert!(p.contains("已签发"));
+        assert!(!p.contains("<令牌>"));
+        assert!(p.contains("~/.starfruit/nodes/a"));
+        assert!(p.contains("starfruit-wake-setup.sh"));
+    }
+
+    #[test]
     fn view_has_json_markdown_and_html() {
         let v: Value =
             serde_json::from_str(r#"{"team":"t","members":[{"name":"a","role":"backend"}]}"#)
                 .unwrap();
         let t = Team::from_value(&v).unwrap();
-        let view = t.view(&ctx());
+        let view = t.view_with_tokens(&ctx(), &std::collections::HashMap::new());
         assert_eq!(view.json["members"][0]["name"], "a");
         assert!(view.markdown.contains("```text"));
         assert!(view.html.contains("starfruitCopy"));
