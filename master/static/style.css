@@ -268,7 +268,7 @@ html, body {
 .canvas-panel { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; }
 .feed-panel { grid-column: 3; grid-row: 1; overflow: hidden; display: flex; flex-direction: column; }
 
-.panel h2 {
+.panel h2, .modal h2 {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -465,13 +465,14 @@ html, body {
   border-bottom: 1px solid var(--glass-border);
 }
 
-.history-head h2 { border-bottom: none; }
+.history-head h2 { border-bottom: none; padding: 14px 18px; }
+.history-head .modal-close { margin-right: 14px; align-self: center; }
 
 .filters {
   display: flex;
   gap: 12px;
   align-items: center;
-  padding: 0 18px 12px;
+  padding: 0 18px;
   color: var(--text-dim);
   font-size: 0.76rem;
   flex-wrap: wrap;
