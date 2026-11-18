@@ -168,19 +168,17 @@
       if (!$("history-mask").hidden) renderHistory();
     }
 
-    // 拓扑：消息流动（经 hub 中转两段）+ 工作状态 + HUB 快转 5s
+    // 拓扑：消息沿 src→hub→dst 的折线连续流动（在 hub 处拐弯）+ 工作状态 + HUB 快转 5s
     const now = performance.now();
     topo.hubSpinUntil = now + 5000;
     const src = m.from;
     const dst = m.to;
     if (dst === "all") {
       for (const name of state.nodes.keys()) {
-        if (name !== src) spawnFlow(name, src, 0);
-        if (name !== src) spawnFlow(src, name, 220);
+        if (name !== src) spawnPath([src, "hub", name]);
       }
     } else {
-      spawnFlow(src, "hub", 0);
-      spawnFlow("hub", dst, 200);
+      spawnPath([src, "hub", dst]);
     }
     if (src) { flashNode(src); topo.activity.set(src, now); }
     if (dst && dst !== "all") { flashNode(dst); topo.activity.set(dst, now); }
@@ -349,21 +347,47 @@
 
   function flashNode(name) { topo.flash.set(name, performance.now()); }
 
-  function spawnFlow(a, b, delayMs) {
+  // 折线路径粒子：src→hub→dst 连续运动，在 hub 处拐弯；全程 ease-in-out 加减速。
+  const FLOW_DURATION_MS = 2600;
+  const easeIO = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+  function spawnPath(names, delayMs = 0) {
     const go = () => {
-      const pa = topo.pos.get(a) || topo.pos.get("hub");
-      const pb = topo.pos.get(b) || topo.pos.get("hub");
-      if (!pa || !pb) return;
-      topo.particles.push({
-        x0: pa.x, y0: pa.y, x1: pb.x, y1: pb.y,
-        t: 0, speed: 1.35,
-        color: b === "hub" ? "#c3e94b" : "#57b6ff",
-        r: 3.4,
-      });
-      topo.edgeFlash.set(b === "hub" ? a : b, performance.now());
-      if (a !== "hub") topo.edgeFlash.set(a, performance.now());
+      const pts = [];
+      for (const n of names) {
+        const p = topo.pos.get(n) || topo.pos.get("hub");
+        if (!p) return;
+        pts.push({ x: p.x, y: p.y });
+      }
+      if (pts.length < 2) return;
+      const seg = [];
+      let total = 0;
+      for (let i = 1; i < pts.length; i++) {
+        const L = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+        seg.push(L);
+        total += L;
+      }
+      if (total <= 0) return;
+      topo.particles.push({ pts, seg, total, t: 0, dur: FLOW_DURATION_MS, color: "#57b6ff", r: 3.4 });
+      const now = performance.now();
+      topo.edgeFlash.set(names[0], now);
+      topo.edgeFlash.set(names[names.length - 1], now);
     };
     if (delayMs > 0) setTimeout(go, delayMs); else go();
+  }
+
+  // 按折线累计长度取 frac(0..1) 处的坐标。
+  function pointAt(pt, frac) {
+    let d = frac * pt.total;
+    for (let i = 0; i < pt.seg.length; i++) {
+      if (d <= pt.seg[i] || i === pt.seg.length - 1) {
+        const a = pt.pts[i], b = pt.pts[i + 1];
+        const f = pt.seg[i] ? Math.min(1, d / pt.seg[i]) : 0;
+        return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+      }
+      d -= pt.seg[i];
+    }
+    return pt.pts[pt.pts.length - 1];
   }
 
   // ── 配色：单色（主节点/工作节点各一色）或多彩（名称哈希 → HSL） ──
@@ -561,24 +585,19 @@
       if (name !== "hub") drawNode(name, p, now, t);
     }
 
-    // 消息粒子（带拖尾）
+    // 消息粒子（折线拐弯 + 拖尾 + 全程加减速）
+    const dtMs = Math.min(100, now - topo.lastFrame);
     for (let i = topo.particles.length - 1; i >= 0; i--) {
       const pt = topo.particles[i];
-      pt.t += 0.016 * pt.speed;
+      pt.t += dtMs / pt.dur;
       if (pt.t >= 1) { topo.particles.splice(i, 1); continue; }
-      const ease = pt.t < 0.5
-        ? 2 * pt.t * pt.t
-        : 1 - Math.pow(-2 * pt.t + 2, 2) / 2;
-      const x = pt.x0 + (pt.x1 - pt.x0) * ease;
-      const y = pt.y0 + (pt.y1 - pt.y0) * ease;
+      const { x, y } = pointAt(pt, easeIO(pt.t));
 
       for (let k = 1; k <= 5; k++) {
-        const tt = Math.max(0, pt.t - k * 0.022);
-        const e2 = tt < 0.5 ? 2 * tt * tt : 1 - Math.pow(-2 * tt + 2, 2) / 2;
-        const tx = pt.x0 + (pt.x1 - pt.x0) * e2;
-        const ty = pt.y0 + (pt.y1 - pt.y0) * e2;
+        const tt = Math.max(0, pt.t - k * 0.02);
+        const p2 = pointAt(pt, easeIO(tt));
         ctx.beginPath();
-        ctx.arc(tx, ty, pt.r * (1 - k * 0.15), 0, Math.PI * 2);
+        ctx.arc(p2.x, p2.y, pt.r * (1 - k * 0.15), 0, Math.PI * 2);
         ctx.fillStyle = hexAlpha(pt.color, 0.16 - k * 0.026);
         ctx.fill();
       }

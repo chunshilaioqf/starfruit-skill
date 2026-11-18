@@ -602,3 +602,16 @@ html, body {
   .canvas-panel { grid-row: 3; }
   .topbar { margin: 12px; }
 }
+
+/* ───── 三列宽屏：撑满视口高度、无页面滚动条（列表/画布内部自适应） ───── */
+@media (min-width: 1181px) {
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  .topbar, .update-banner, .foot { flex: none; }
+  .layout { flex: 1; min-height: 0; grid-template-rows: 1fr; }
+  .nodes-panel { display: flex; flex-direction: column; }
+  .nodes-panel h2, .canvas-panel h2, .feed-panel h2 { flex: none; }
+  .node-list, .feed { flex: 1; min-height: 0; max-height: none; }
+  .canvas-wrap { min-height: 0; }
+  .legend { flex: none; }
+}
