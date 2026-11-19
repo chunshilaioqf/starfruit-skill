@@ -212,8 +212,11 @@ STARFRUIT_WAKE_CMD='<你的 agent 唤醒命令>' \
 
 ## 独立 Cloudflare Tunnel（公网模式）
 
-`scripts/starfruit-tunnel.sh start|stop|restart|status|url [端口]`，数据 `~/.starfruit/tunnel`
-（watchdog/cloudflared pid、日志、url 文件）。**与主节点生命周期解耦**：主节点重启不影响公网地址；
+`scripts/starfruit-tunnel.sh start|stop|restart|status|url [端口] [模式]`，数据 `~/.starfruit/tunnel`
+（watchdog/cloudflared pid、日志、url 文件）。模式 `plain|tls|auto`（默认 auto，也可 `STARFRUIT_TUNNEL_MODE`）：
+`plain` 转发 `http://`；`tls` 转发 `https://` + `--no-tls-verify`（**public 强制 tls，必须用 tls/auto**，
+否则 mode_mismatch 断连）；auto 先探测主节点实际模式、再读 `setup.json`、回退 plain。
+**与主节点生命周期解耦**：主节点重启不影响公网地址；
 仅显式 `stop`/`restart` 才变更地址；cloudflared 崩溃由看门狗自动拉起。停止只按本脚本记录的精确 PID
 操作，绝不波及其它 cloudflared 进程。主节点启动时读取 `~/.starfruit/tunnel/url` 在 banner/文档/面板展示。
 

@@ -3,6 +3,12 @@
 本文件格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
 ## [Unreleased]
+### 修复
+- **Tunnel 脚本支持 TLS 主节点**：`scripts/starfruit-tunnel.sh` 原先写死 `http://` 转发，仅适配 plain；
+  public 模式强制 tls 时会 mode_mismatch 断连。现新增模式参数 `plain|tls|auto`（默认 auto，
+  或 `STARFRUIT_TUNNEL_MODE`）：tls 用 `https://` + `--no-tls-verify`（自签证书）；auto 先探测主节点
+  实际模式（TLS ClientHello 嗅探）、再读 `~/.starfruit/master/setup.json`、回退 plain。
+  实测 plain/tls 主节点探测均正确；文档（SKILL/daemon）同步。
 
 ## [0.10.0] - 2026-11-18
 ### 新增

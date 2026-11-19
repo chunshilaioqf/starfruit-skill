@@ -136,13 +136,17 @@ scripts/starfruit-wake-setup.sh ~/.starfruit/nodes/worker-a/wake.log ['唤醒命
 公网模式下 Tunnel **独立后台运行**，与主节点生命周期解耦：
 
 ```bash
-scripts/starfruit-tunnel.sh start      # 后台启动（默认指向 127.0.0.1:10001）
-scripts/starfruit-tunnel.sh status     # 运行状态 + 公网地址
-scripts/starfruit-tunnel.sh url        # 只输出公网地址
-scripts/starfruit-tunnel.sh stop       # 显式停止（仅此命令会终止 Tunnel）
-scripts/starfruit-tunnel.sh restart    # 显式重启（公网地址会变化）
+scripts/starfruit-tunnel.sh start          # 后台启动（默认指向 127.0.0.1:10001，模式 auto）
+scripts/starfruit-tunnel.sh start 10001 tls # 显式 tls：https:// + --no-tls-verify（public 必须）
+scripts/starfruit-tunnel.sh status         # 运行状态 + 公网地址
+scripts/starfruit-tunnel.sh url            # 只输出公网地址
+scripts/starfruit-tunnel.sh stop           # 显式停止（仅此命令会终止 Tunnel）
+scripts/starfruit-tunnel.sh restart        # 显式重启（公网地址会变化）
 ```
 
+- 模式 `plain|tls|auto`（第 3 参数或 `STARFRUIT_TUNNEL_MODE`，默认 auto）：`plain`→`http://`；
+  `tls`→`https://`+`--no-tls-verify`（自签证书）；auto 探测主节点模式→读 `setup.json`→回退 plain。
+  **public 强制 tls，若用 plain 转发会 mode_mismatch 断连**；
 - 数据 `~/.starfruit/tunnel`（watchdog/cloudflared pid、日志、url 文件）；
 - **主节点重启不影响公网地址**；仅显式 stop/restart 才变更；cloudflared 崩溃由看门狗自动拉起；
 - 停止只按本脚本记录的精确 PID 操作，绝不波及其它 cloudflared 进程；
