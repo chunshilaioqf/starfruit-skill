@@ -3,12 +3,20 @@
 本文件格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
 ## [Unreleased]
-### 修复
+
+## [0.11.0] - 2026-11-20
+### 新增
 - **Tunnel 脚本支持 TLS 主节点**：`scripts/starfruit-tunnel.sh` 原先写死 `http://` 转发，仅适配 plain；
   public 模式强制 tls 时会 mode_mismatch 断连。现新增模式参数 `plain|tls|auto`（默认 auto，
   或 `STARFRUIT_TUNNEL_MODE`）：tls 用 `https://` + `--no-tls-verify`（自签证书）；auto 先探测主节点
   实际模式（TLS ClientHello 嗅探）、再读 `~/.starfruit/master/setup.json`、回退 plain。
-  实测 plain/tls 主节点探测均正确；文档（SKILL/daemon）同步。
+  实测 plain/tls 主节点探测均正确；文档（SKILL/daemon）同步。（原记录于 Unreleased，随本版归档）
+### 修复
+- **Tunnel 看门狗启动即崩（unbound variable）**：UTF-8 locale 下脚本中 `$mode`/`$code` 后紧跟全角括号
+  时，bash 将全角字符首字节并入变量名，`set -u` 下报 `mode: unbound variable`，看门狗启动即崩、
+  隧道无法建立（含无效模式报错路径与看门狗重启路径共 4 处）。现全部改为 `${mode}`/`${code}`
+  花括号引用。隔离环境实测：原始脚本复现崩溃；修复后无效模式报错正常、公网 curl 回环可达、
+  cloudflared 退出后看门狗自动重启并取得新地址。
 
 ## [0.10.0] - 2026-11-18
 ### 新增

@@ -1,6 +1,6 @@
 [package]
 name = "starfruit-master"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 description = "starfruit 主节点（管理者）：局域网多节点 WS 消息枢纽 + 只读 Web 可视化面板，支持 plain/tls 双模式"
 

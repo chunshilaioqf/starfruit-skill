@@ -106,3 +106,23 @@
 - 方案：新增 paths/update/setup/nodesdoc 四个 master 模块；hub 注册改拒绝在线重名；三客户端默认目录+name_conflict 退出 4+每周更新检查；四个运维脚本；面板前端重写（i18n/历史弹窗/拓扑动画/配色/节点弹窗/更新横幅）。
 - 风险：①Moli 自研浏览器 canvas2d 不完整致残影，改用真实 Chrome headless(CDP 9223) 实测；②drawNode 时间参数 t 遮蔽 i18n 函数 t 致崩溃，改名 sec；③master 与节点 update-check schema 不一致，统一 ts_ms/latest；④update-banner display:flex 覆盖 hidden，补 [hidden]{display:none}；⑤performance.now() 从 0 起致启动瞬间误判工作中，activity/flash 缺省改 -1e9。
 - 备注/进度：已完成。master clippy 0 警告、26 单测通过；Rust 子节点 2 单测通过；e2e 新增 13–16 段共 93 通过 / 0 失败；真实 Chrome 实测面板中英/历史弹窗/单色多彩/节点弹窗/更新横幅显隐/拓扑齿轮与呼吸动画均正常；开发全程避开生产（10001/10002、coder、cloudflared），测试用 195xx/197xx 端口与隔离 HOME，清理仅按精确 PID。VERSION 0.10.0。
+
+### T-13 修复 Tunnel 看门狗全角字符变量解析崩溃（unbound variable）
+- 状态：已完成
+- 创建：2026-11-20　完成：2026-11-20
+- 目标：修复 `scripts/starfruit-tunnel.sh` 在 UTF-8 locale 下 `$mode`/`$code` 后紧跟全角括号时，bash 将全角字符首字节（0xEF）并入变量名 → `set -u` 报 `mode\xEF: unbound variable`，看门狗启动即崩、隧道无法建立（生产 2026-11-20 实际故障）
+- 验收标准：①原始脚本 `__watch` 与无效模式两路径在隔离环境复现崩溃；②修复版无效模式正常报错 exit 2；③隔离 HOME 端到端：取得真实 Quick Tunnel URL 且公网 curl 回环收到本地标记内容；④kill cloudflared 后看门狗自动重启并取得新地址；⑤stop 精确清理无残留；⑥全程生产主节点/隧道进程与 url 文件不受影响
+- 涉及：scripts/starfruit-tunnel.sh、TODO.md、CHANGELOG.md、VERSION、master/Cargo.toml、nodes/rust/Cargo.toml
+- 方案：`$mode`/`$code` → `${mode}`/`${code}`，共 4 处（69/86/139 与已部署副本修复一致；157 为部署副本遗漏的看门狗重启路径，实测 cloudflared 退出时确会触发）
+- 风险：同类隐患蔓延到其余 4 个脚本（转 T-14）；url 解析器存在 `api.trycloudflare.com` 误抓 race（测试实测踩中一次，转 T-14）
+- 备注/进度：已完成。隔离 HOME + 19501 端口 + UTF-8 locale：T1/T2 复现原始脚本崩溃 rc=1（line 139/69）；T3 修复版无效模式报错正常 rc=2；E1 取得真实公网地址、E2 公网 curl 回环收到本地标记、E3 kill 后看门狗自动重启、E4 重启后取得新地址、E5 清理干净，共 15 项断言全过；生产 master 86596、生产 cloudflared 86118、12000 隧道 20293/25287 全程健在。VERSION 0.11.0。
+
+### T-14 shell 脚本同类隐患批量加固 + Tunnel url 误抓修复
+- 状态：待办
+- 创建：2026-11-20　完成：-
+- 目标：①修复与 T-13 同类的 `$变量`+全角字符 隐患：`starfruit-keepalive.sh:31`（`（exit $code），`——保活恢复路径，进程异常退出时保活脚本自身会崩）、`starfruit-cucumber.sh:117/119`（`$NAME（`）、`starfruit-wake-bridge.sh:30`（`$LOG（`，启动路径）、`starfruit-wake-setup.sh:33`（WAKE_CMD 串内 `$SF_FROM）：`，唤醒时刻执行）；②Tunnel url 解析排除 `api.trycloudflare.com`（cloudflared 日志中的 Quick Tunnel API 端点）误写进 url 文件；③评估 stop 后孤儿 url-watcher（≤90s）回写 url 文件问题
+- 验收标准：①各隐患点全部 `${var}` 加固并按 T-13 方式隔离验证；②url 文件不再出现 api. 地址；③受影响文档与部署副本同步说明
+- 涉及：scripts/starfruit-keepalive.sh、scripts/starfruit-cucumber.sh、scripts/starfruit-wake-bridge.sh、scripts/starfruit-wake-setup.sh、scripts/starfruit-tunnel.sh
+- 方案：统一加花括号；url watcher 先过滤 `api\.trycloudflare\.com` 再解析（注意 grep 对含非法字节行的 locale 行为，断言用字节级匹配）
+- 风险：wake-setup:33 的 WAKE_CMD 串变更需同步各已部署机器，否则旧部署唤醒命令仍是旧串
+- 备注/进度：待办

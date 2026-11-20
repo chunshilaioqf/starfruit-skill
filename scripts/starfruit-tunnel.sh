@@ -66,7 +66,7 @@ case "$cmd" in
     case "$mode" in
       plain|tls) ;;
       auto) mode="$(detect_mode "$port")" ;;
-      *) echo "[tunnel] 无效模式: $mode（可选 plain|tls|auto）" >&2; exit 2 ;;
+      *) echo "[tunnel] 无效模式: ${mode}（可选 plain|tls|auto）" >&2; exit 2 ;;
     esac
     if [ "$cmd" = "start" ] && pid_alive "$WD_PID"; then
       echo "[tunnel] 已在运行（watchdog pid $(cat "$WD_PID")），公网地址: $(read_url)"
@@ -83,7 +83,7 @@ case "$cmd" in
     : > "$URL_FILE"
     nohup bash "$0" __watch "$port" "$mode" >> "$WD_LOG" 2>&1 &
     echo $! > "$WD_PID"
-    echo "[tunnel] 已后台启动（watchdog pid $(cat "$WD_PID")），模式=$mode 指向 $(scheme_of "$mode")://127.0.0.1:$port"
+    echo "[tunnel] 已后台启动（watchdog pid $(cat "$WD_PID")），模式=${mode} 指向 $(scheme_of "$mode")://127.0.0.1:$port"
     # 等待 Quick Tunnel 分配公网地址（最多 60s）。
     for _ in $(seq 1 60); do
       u="$(read_url)"
@@ -136,7 +136,7 @@ case "$cmd" in
     extra="$(extra_flags_of "$mode")"
     BACKOFF=2
     while true; do
-      echo "[tunnel-watch] $(date '+%F %T') 启动 cloudflared（mode=$mode）→ $scheme://127.0.0.1:$port"
+      echo "[tunnel-watch] $(date '+%F %T') 启动 cloudflared（mode=${mode}）→ $scheme://127.0.0.1:$port"
       # 每次拉起前清空日志与旧地址，避免把上一轮的 URL 误当本轮地址。
       : > "$LOG"
       : > "$URL_FILE"
@@ -154,7 +154,7 @@ case "$cmd" in
       wait "$(cat "$CF_PID")"
       code=$?
       rm -f "$CF_PID"
-      echo "[tunnel-watch] cloudflared 退出（exit $code），${BACKOFF}s 后重启"
+      echo "[tunnel-watch] cloudflared 退出（exit ${code}），${BACKOFF}s 后重启"
       sleep "$BACKOFF"
       BACKOFF=$(( BACKOFF < 30 ? BACKOFF * 2 : 30 ))
     done
